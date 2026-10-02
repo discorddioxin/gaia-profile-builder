@@ -11,6 +11,7 @@ import {
   DEFAULT_CUSTOM_COMPONENTS,
   CLIP_PRESETS,
 } from './utils/presets';
+import { createGaiaPanelElement, getGaiaComponent } from './utils/gaiaSpec';
 import { HeaderBar, AppViewMode } from './components/HeaderBar';
 import { Canvas } from './components/Canvas';
 import { DockPanel, DockTab } from './components/DockPanel';
@@ -250,6 +251,30 @@ export const App: React.FC = () => {
       let defaultHeight = 60;
       let defaultBg = 'rgba(15, 23, 42, 0.7)';
       let defaultColor = '#e2e8f0';
+
+      // Gaia-supported components are authored with real V2 panel structure.
+      if (type === 'gaia-panel' || customProps?.gaia) {
+        const kind = customProps?.gaia?.kind || 'custom';
+        const column = customProps?.gaia?.column || getGaiaComponent(kind).defaultColumn;
+        const panel = createGaiaPanelElement(kind, column, elements.length, settings);
+        const merged: ProfileElement = {
+          ...panel,
+          ...customProps,
+          id: newId,
+          gaia: {
+            ...panel.gaia!,
+            ...(customProps?.gaia || {}),
+          },
+        };
+        updateActiveProfile((p) => ({
+          ...p,
+          elements: [...p.elements, merged],
+          selectedId: newId,
+        }));
+        recordHistory([...elements, merged], settings);
+        focusSelectedElementPane();
+        return;
+      }
 
       if (type === 'quote') {
         defaultContent = '"Add your signature quote or testimonial here."';

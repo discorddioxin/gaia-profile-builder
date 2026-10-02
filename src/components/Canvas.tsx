@@ -6,6 +6,12 @@ import {
   CustomComponent,
 } from '../types/profile';
 import { getClipPathCss, getMaskCss } from '../utils/bbcodeTranspiler';
+import {
+  columnForX,
+  gaiaPanelPreview,
+  getGaiaComponent,
+  isGaiaComponentKind,
+} from '../utils/gaiaSpec';
 import { FloatingMicroBar } from './FloatingMicroBar';
 import { RotateCw, Lock, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 
@@ -320,6 +326,19 @@ export const Canvas: React.FC<CanvasProps> = ({
       }
     }
 
+    // Check if dropping a Gaia-supported component
+    const gaiaKind = e.dataTransfer.getData('application/gaia-component-kind');
+    if (gaiaKind && isGaiaComponentKind(gaiaKind)) {
+      const def = getGaiaComponent(gaiaKind);
+      const column = columnForX(settings, dropX);
+      onAddElement('gaia-panel', {
+        x: dropX,
+        y: dropY,
+        gaia: { kind: gaiaKind, column, title: def.defaultTitle },
+      });
+      return;
+    }
+
     // Check if dropping an element type
     const elementType = e.dataTransfer.getData(
       'application/profile-element-type'
@@ -483,7 +502,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                   }}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
-                    if (['text', 'quote', 'code', 'link', 'box'].includes(el.type)) {
+                    if (['text', 'quote', 'code', 'link', 'box', 'gaia-panel'].includes(el.type)) {
                       setEditingId(el.id);
                     }
                   }}
@@ -610,6 +629,40 @@ export const Canvas: React.FC<CanvasProps> = ({
                             {el.content}
                           </div>
                         )}
+
+                        {/* GAIA V2 COMPONENT — rendered as its real panel structure */}
+                        {el.type === 'gaia-panel' && el.gaia && (
+                          <div className="w-full h-full flex flex-col bg-slate-950/85 pointer-events-none">
+                            <div className="flex items-center justify-between gap-1 border-b border-cyan-500/30 bg-cyan-500/15 px-1.5 py-0.5">
+                              <span className="truncate font-mono text-[9px] text-cyan-200">
+                                .panel.{getGaiaComponent(el.gaia.kind).panelClass.split(' ')[0]}
+                              </span>
+                              <span className="shrink-0 font-mono text-[9px] text-cyan-300/80">
+                                col {el.gaia.column}
+                              </span>
+                            </div>
+                            <div className="truncate border-b border-slate-700/60 px-2 py-1 text-[11px] font-semibold text-indigo-200">
+                              {el.gaia.title || el.content || getGaiaComponent(el.gaia.kind).defaultTitle}
+                            </div>
+                            <div className="flex-1 space-y-0.5 overflow-hidden px-2 py-1">
+                              {gaiaPanelPreview(el.gaia.kind, el.gaia.column, el.gaia.title, el.gaia.panelId).rows.map(
+                                (row) => (
+                                  <div key={row} className="truncate font-mono text-[9px] text-slate-400">
+                                    ▦ {row}
+                                  </div>
+                                )
+                              )}
+                            </div>
+                            <div className="flex items-center justify-between gap-1 border-t border-slate-800 px-1.5 py-0.5 font-mono text-[8px] text-slate-500">
+                              <span className="truncate">
+                                #{el.gaia.panelId || getGaiaComponent(el.gaia.kind).panelId || 'id_custom_####'}
+                              </span>
+                              {getGaiaComponent(el.gaia.kind).bbcodeRequired && (
+                                <span className="shrink-0 text-pink-400/80">bbcode</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
@@ -627,9 +680,11 @@ export const Canvas: React.FC<CanvasProps> = ({
                       {/* Bounding Box Border */}
                       <div className="absolute inset-0 pointer-events-none border border-indigo-400" />
 
-                      {/* Attribute Selector Label Badge */}
+                      {/* Selector Label Badge — Gaia components show their panel selector */}
                       <div className="absolute -top-5 left-0 rounded bg-indigo-600 px-1.5 py-0.5 text-[9px] font-mono text-white pointer-events-none whitespace-nowrap shadow">
-                        span[style*=&apos;color: {el.colorMarker}&apos;]
+                        {el.type === 'gaia-panel' && el.gaia
+                          ? `#${el.gaia.panelId || getGaiaComponent(el.gaia.kind).panelId || 'id_custom_####'}`
+                          : `span[style*='color: ${el.colorMarker}']`}
                       </div>
 
                       {/* Rotate Handle */}

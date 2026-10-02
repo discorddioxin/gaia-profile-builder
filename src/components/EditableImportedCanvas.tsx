@@ -253,6 +253,7 @@ interface EditableImportedCanvasProps {
 
 // Editor style block markers so we can identify & strip them during serialization
 const EDITOR_STYLE_MARK = 'data-bb-editor-style';
+const SURFACE_STYLE_MARK = 'data-bb-surface-style';
 const HEAD_NODE_MARK = 'data-bb-head-node';
 
 const EDITOR_CSS = `
@@ -301,25 +302,64 @@ const EDITOR_CSS = `
   }
 `;
 
+/**
+ * True when a selector's final compound addresses the document root
+ * (`html`, `body`, `body#viewer`, `body.js`, `:root`, …).
+ */
+function isRootSurfaceSelector(selector: string): boolean {
+  const last = selector.split(/[\s>+~]+/).filter(Boolean).pop() || '';
+  return /^(html|body|:root)([#.][\w-]+|:{1,2}[\w-]+(\([^)]*\))?)*$/i.test(last);
+}
+
+/**
+ * Shadow DOM has no real document <html>, and the editor keeps the imported
+ * <body> inside a shadow root. Gaia themes usually paint the surface with
+ * `body { background: ... }` or `html, body { background: ... }` (a *style*,
+ * not an <img>), so those declarations are aliased onto `:host` and the
+ * shadow body. Export/serialization is untouched.
+ */
 function adaptImportedCssForShadow(css: string): string {
-  // In Shadow DOM there is no real document <html>. Gaia themes often put
-  // repeating background rules on `html`, `body`, or `html, body`. Add scoped
-  // aliases so those backgrounds render in the editor without mutating export.
-  return css.replace(/(^|})\s*([^{}@]+)\{/g, (match, brace, selectorText) => {
+  return css.replace(/(^|})\s*([^{}@]+)\{([^{}]*)\}/g, (match, brace, selectorText, body) => {
     const selectors = String(selectorText)
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
     if (selectors.length === 0) return match;
+
     const aliases: string[] = [];
+    const bodyHasBackground = /background(-image|-color|-repeat|-size|-position|-attachment)?\s*:/i.test(
+      String(body)
+    );
+
     selectors.forEach((selector) => {
-      if (selector === 'html') aliases.push(':host', 'body[data-bb-import-body]');
-      if (selector === 'body') aliases.push(':host', 'body[data-bb-import-body]');
-      if (selector === 'html body') aliases.push(':host', 'body[data-bb-import-body]');
+      const exactRoot = selector === 'html' || selector === 'body' || selector === 'html body';
+      if (exactRoot || (bodyHasBackground && isRootSurfaceSelector(selector))) {
+        aliases.push(':host', 'body[data-bb-import-body]');
+      }
     });
+
     const merged = [...selectors, ...aliases].filter((s, i, arr) => arr.indexOf(s) === i);
-    return `${brace}\n${merged.join(', ')} {`;
+    return `${brace}\n${merged.join(', ')} {${body}}`;
   });
+}
+
+/**
+ * Fallback surface styles derived from the scraped import (settings carry the
+ * background detected from CSS), rendered *before* imported styles so the
+ * original cascade still wins when it defines its own background.
+ */
+function buildSurfaceFallbackCss(settings: CanvasSettings): string {
+  const hasImage = !!settings.backgroundImage;
+  const color = settings.backgroundColor;
+  if (!hasImage && (!color || color === 'transparent')) return '';
+  return `:host {
+  background-color: ${color || 'transparent'};
+  ${hasImage ? `background-image: url('${settings.backgroundImage}');` : ''}
+  background-repeat: ${settings.backgroundRepeat || (hasImage ? 'repeat' : 'no-repeat')};
+  background-size: ${settings.backgroundSize || 'auto'};
+  background-position: ${settings.backgroundPosition || 'left top'};
+  background-attachment: ${settings.backgroundAttachment || 'scroll'};
+}`;
 }
 
 export const EditableImportedCanvas = forwardRef<
@@ -1276,6 +1316,7 @@ export const EditableImportedCanvas = forwardRef<
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const el = node as HTMLElement;
       if (el.tagName === 'STYLE' && el.hasAttribute(EDITOR_STYLE_MARK)) return;
+      if (el.tagName === 'STYLE' && el.hasAttribute(SURFACE_STYLE_MARK)) return;
       if (!el.hasAttribute(HEAD_NODE_MARK)) return;
       const clone = el.cloneNode(true) as HTMLElement;
       stripEditorCruft(clone);
@@ -1345,6 +1386,17 @@ export const EditableImportedCanvas = forwardRef<
     // Build shadow content by preserving original head node order as closely
     // as possible. Complex Gaia layouts depend heavily on stylesheet order.
     shadow.innerHTML = '';
+
+    // Scraped background (often a CSS `background:` rule rather than an <img>)
+    // is applied as a base layer so it always renders, even if the original
+    // selector cannot match inside this shadow root.
+    const surfaceCss = buildSurfaceFallbackCss(settings);
+    if (surfaceCss) {
+      const surfaceStyle = document.createElement('style');
+      surfaceStyle.setAttribute(SURFACE_STYLE_MARK, '');
+      surfaceStyle.textContent = surfaceCss;
+      shadow.appendChild(surfaceStyle);
+    }
 
     const stylesheetLinks: HTMLLinkElement[] = [];
     Array.from(doc.head?.childNodes || []).forEach((node) => {
@@ -2113,6 +2165,16 @@ export const EditableImportedCanvas = forwardRef<
         style={{
           width: `${Math.max(1, layoutWidth * contentScale)}px`,
           height: `${Math.max(1, visibleHeight * zoom)}px`,
+          // Scraped surface (usually a CSS background, not an <img>) as a
+          // fallback behind the shadow DOM content.
+          backgroundColor: settings.backgroundColor || (settings.backgroundImage ? 'transparent' : undefined),
+          backgroundImage: settings.backgroundImage
+            ? `url('${settings.backgroundImage}')`
+            : undefined,
+          backgroundRepeat: settings.backgroundRepeat || 'no-repeat',
+          backgroundSize: settings.backgroundSize || 'cover',
+          backgroundPosition: settings.backgroundPosition || 'center top',
+          backgroundAttachment: settings.backgroundAttachment || 'scroll',
         }}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes('application/imported-dedicated-kind')) {

@@ -118,7 +118,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
     }
   };
 
-  const handleParseHtml = () => {
+  const handleParseHtml = async () => {
     if (!htmlInput.trim()) return;
     setStatus('loading');
     setError('');
@@ -127,7 +127,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
 
     try {
       const source = htmlSourceUrl.trim() || undefined;
-      const importResult = importProfileFromHtml(htmlInput, source);
+      const importResult = await importProfileFromHtml(htmlInput, source, (msg) =>
+        setProgressMsg(msg)
+      );
       setResult(importResult);
       setStatus('success');
       setInitialRenderMode('canvas');
@@ -456,6 +458,86 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                     tint="cyan"
                   />
                 </div>
+              </div>
+
+              {/* Scrape diagnostics: stylesheets, background, Gaia components */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 space-y-2.5">
+                <div className="text-[11px] font-semibold text-slate-200 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                  Scrape Report
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px]">
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px]">Stylesheets</div>
+                    <div className="font-mono text-sm text-slate-100">
+                      {result.diagnostics.stylesheetsFetched}/{result.diagnostics.stylesheetsFound}
+                    </div>
+                    <div className="text-slate-500">fetched via proxy</div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px]">Background</div>
+                    <div className="font-mono text-sm text-slate-100 truncate">
+                      {result.diagnostics.background.detected
+                        ? result.diagnostics.background.image
+                          ? 'image (style)'
+                          : 'color (style)'
+                        : 'none'}
+                    </div>
+                    <div className="text-slate-500 truncate" title={result.diagnostics.background.source}>
+                      {result.diagnostics.background.source}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px]">Components</div>
+                    <div className="font-mono text-sm text-slate-100">{result.diagnostics.components.length}</div>
+                    <div className="text-slate-500">categories detected</div>
+                  </div>
+                </div>
+
+                {result.diagnostics.background.image && (
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <img
+                      src={result.diagnostics.background.image}
+                      alt="Detected background"
+                      className="h-10 w-16 object-cover border border-slate-700"
+                    />
+                    <div className="min-w-0 text-[10px]">
+                      <div className="font-semibold text-slate-200">Background resolved from CSS</div>
+                      <div className="truncate font-mono text-slate-500">
+                        {result.diagnostics.background.image}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {result.diagnostics.components.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {result.diagnostics.components.map((component) => (
+                      <span
+                        key={component.kind}
+                        className="rounded bg-indigo-500/15 border border-indigo-500/30 px-1.5 py-0.5 text-[10px] font-mono text-indigo-200"
+                        title={`columns: ${component.columns.join(', ') || '—'} · ${component.panelIds.join(', ')}`}
+                      >
+                        {component.label} ×{component.count}
+                        {component.columns.length > 0 && (
+                          <span className="text-indigo-400/80"> · col {component.columns.join('/')}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {result.diagnostics.warnings.length > 0 && (
+                  <ul className="space-y-1 text-[10px] text-amber-300/90">
+                    {result.diagnostics.warnings.map((warning) => (
+                      <li key={warning} className="flex items-start gap-1.5">
+                        <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />
+                        <span>{warning}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               {/* Initial render mode picker */}

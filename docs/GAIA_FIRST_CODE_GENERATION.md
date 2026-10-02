@@ -1,0 +1,109 @@
+# Gaia-First Code Generation & Profile Scraping
+
+This document describes how the builder now honours `docs/GAIA_PROFILE_HTML_SPEC.md`
+when it generates HTML/CSS, when it lists editor components, and when it scrapes
+an existing GaiaOnline V2 profile.
+
+## 1. Code generation is Gaia-first
+
+`src/utils/gaiaSpec.ts` is the single source of truth for every supported V2
+section. `transpileProfile()` (`src/utils/bbcodeTranspiler.ts`) produces:
+
+| Output | What it contains |
+| --- | --- |
+| `columnsHtml` | A real `<div id="columns">` with `#column_1`, `#column_2`, `#column_3` (`class="column focus_column"`) and one `.panel` per component, in the column it belongs to. |
+| `css` | Rules authored against Gaia selectors only: `#columns`, `#columns .column`, `.panel`, per-kind panel CSS (`.comments_panel dt`, `.equipped_list_panel .item`, `.details_panel img.details_avatar`, …) and per-instance overrides keyed on `#id_comments`, `#id_details`, and so on. |
+| `fullDocument` | `<!doctype html>` shell with `<meta charset>`, `<meta name="viewport" content="width=1000, initial-scale=1">`, the `<style>` block and the `#columns` markup. |
+| `bbcode` | Emitted **only when needed** (see below). |
+
+Key rules enforced by the generator:
+
+- `#columns` owns layout — panels are never absolutely positioned at body level.
+- Panels keep the spec's shared contract: `.panel COMPONENT_CLASS` + `id` + `h2`
+  title + `.clear`.
+- Freeform canvas elements are still supported, but they are wrapped in a real
+  `.panel.custom_panel` (`#id_custom_####` / `#custom_####_content`) so the
+  exported profile always remains inside the V2 column layout.
+- Panel width is never hard-coded; the column controls reflow.
+- `data-bb-*` editor attributes are never exported.
+
+## 2. BBCode is sparse by design
+
+BBCode is treated as a fallback for content Gaia only accepts through a BBCode
+field:
+
+- `Signature` and `Comments` payloads (`bbcodeRequired` on the component def).
+- Freeform content made of quote / code / image / link / YouTube / `[clear ]`
+  elements when the profile has **no** Gaia panels at all.
+
+Everywhere else the BBCode tab states *"BBCode not needed for this profile"* and
+explains why. When BBCode *is* needed and panels exist, only the payloads are
+emitted (the CSS travels in the CSS tab); when the profile is freeform-only the
+`[style] … [/style]` block is included because it is the only channel left.
+
+## 3. Every category is a first-class editor component
+
+`GAIA_COMPONENT_LIST` drives the Dock panel palette for **all** profiles:
+
+| Category | Components |
+| --- | --- |
+| Identity | Details, Equipped List |
+| Social | Contact, Comments, Recent Visitors, Friends |
+| Activity | Forums, House, Store, Badges, Wish List |
+| Content | Signature, About, Journal |
+| Layout | Custom Panel |
+
+- Imported (editable canvas) profiles insert the real panel DOM.
+- Freeform profiles create a `gaia-panel` element that carries the same
+  structure, renders the component preview on canvas, exposes category / column
+  / title controls in the properties panel, and generates the same V2 markup.
+
+## 4. Scraping: stylesheets, components and the background
+
+`importProfileFromUrl()` / `importProfileFromHtml()` now:
+
+1. Fetch every `<link rel="stylesheet">` in `<head>` order through the proxy
+   chain (also for pasted HTML when a source URL is provided).
+2. Parse all `<style>` blocks in `<head>` **and** `<body>`.
+3. Detect the profile surface — the background is usually a *style*, not an
+   `<img>`:
+   - `background` / `background-image` / `background-color` / `-repeat` /
+     `-size` / `-position` / `-attachment` in CSS rules that target
+     `html`, `body`, `#viewer`, `html body`, `body#viewer`, `*`;
+   - inline `style="…"` on `<html>`, `<body>`, `#viewer`;
+   - the legacy `background="…"` attribute.
+   Relative `url(...)` values are resolved against the profile URL.
+4. Append a clearly marked rescue block to the imported CSS
+   (`/* Profile surface detected by BBStudio import */ html, body, body#viewer { … }`)
+   so the background renders even when the original selector cannot match inside
+   the editor's shadow root, or when a linked stylesheet was blocked.
+5. Store the surface on `settings` (`backgroundColor`, `backgroundImage`,
+   `backgroundRepeat`, `backgroundSize`, `backgroundPosition`,
+   `backgroundAttachment`) so the canvas frame, the host wrapper and the shadow
+   DOM all paint it.
+6. Translate every detected panel into a `gaia-panel` element
+   (`detectGaiaComponentKind`) and report a scrape summary:
+   stylesheets found/fetched, background source, component counts per column and
+   warnings. The Import dialog renders this report before you open the profile.
+
+### Debugging the editable view
+
+- Linked stylesheets are kept inside the shadow root, and root-level selectors
+  (`body`, `body#viewer`, `html body`, …) are aliased onto `:host` /
+  `body[data-bb-import-body]` when they carry background declarations.
+- A `data-bb-surface-style` fallback layer is injected **before** the imported
+  styles, so authored CSS always wins when it defines its own background.
+- The fallback layer, editor chrome and `data-bb-*` attributes are stripped
+  again during serialization, so exports stay clean.
+
+## 5. View Code
+
+The Code dialog has separate tabs:
+
+- **Columns HTML** — the `#columns` structure (for imports: extracted from the
+  scraped document with `data-bb-id` removed).
+- **CSS (copy/paste)** — the generated or imported stylesheet.
+- **BBCode** — badge shows `needed` / `not needed`.
+- **Full Document** (imports only) — the untouched raw imported HTML.
+
+Each tab has its own Copy and Download action.

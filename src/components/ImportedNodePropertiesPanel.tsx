@@ -142,6 +142,10 @@ export const ImportedNodePropertiesPanel: React.FC<ImportedNodePropertiesPanelPr
     const actions: Array<{ label: string; action: () => void; danger?: boolean }> = [];
     if (isComment) {
       actions.push({ label: 'Panel', action: () => onSelectCommentsPanel?.(node.bbId) });
+      actions.push({ label: 'Add Comment', action: () => onAddComment?.(node.bbId) });
+      if (role === 'comment-header' || role === 'comment-body') {
+        actions.push({ label: 'Delete Comment', action: () => onDeleteCommentThread?.(node.bbId), danger: true });
+      }
     }
     if (isWishlist) {
       actions.push({ label: 'Panel', action: () => onSelectWishlistPanel?.(node.bbId) });
@@ -165,6 +169,7 @@ export const ImportedNodePropertiesPanel: React.FC<ImportedNodePropertiesPanelPr
       if (role !== 'contact-panel' && role !== 'contact-title' && role !== 'contact-list') actions.push({ label: 'Delete Action', action: () => onDeleteContactAction?.(node.bbId), danger: true });
     }
     if (isFootprint) {
+      actions.push({ label: 'Add Visitor', action: () => onAddFootprint?.(node.bbId) });
       if (role !== 'footprints-panel' && role !== 'footprints-title') actions.push({ label: 'Delete Visitor', action: () => onDeleteFootprint?.(node.bbId), danger: true });
     }
     if (isBadge) {

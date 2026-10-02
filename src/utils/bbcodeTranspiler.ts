@@ -1,4 +1,18 @@
-import { ProfileElement, CanvasSettings, TranspilerOutput } from '../types/profile';
+import {
+  ProfileElement,
+  CanvasSettings,
+  TranspilerOutput,
+  GaiaComponentUsage,
+} from '../types/profile';
+import {
+  GAIA_COLUMNS_BASE_CSS,
+  GAIA_PANEL_BASE_CSS,
+  buildPanelHtml,
+  buildV2Document,
+  getGaiaComponent,
+  indent,
+  isGaiaPanelElement,
+} from './gaiaSpec';
 
 /**
  * Exact Mappings according to specification:
@@ -174,262 +188,484 @@ export function getElementSelector(element: ProfileElement, index: number): stri
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/* Gaia-first code generation                                                  */
+/* -------------------------------------------------------------------------- */
+
+type Column = 1 | 2 | 3;
+
+interface GaiaPanelSlot {
+  slotKind: 'gaia';
+  element: ProfileElement;
+  def: ReturnType<typeof getGaiaComponent>;
+  column: Column;
+  panelId: string;
+  index: number;
+}
+
+interface FreeformSlot {
+  slotKind: 'freeform';
+  column: Column;
+  elements: ProfileElement[];
+  /** Custom panel index used for `id_custom_####`. */
+  customIndex: number;
+  /** Vertical space the absolutely positioned children need. */
+  contentHeight: number;
+  /** X offset of the column band, subtracted from child positions. */
+  originX: number;
+}
+
+type ColumnSlot = GaiaPanelSlot | FreeformSlot;
+
+const BBCODE_ONLY_TYPES: ProfileElement['type'][] = ['quote', 'code', 'video', 'link', 'image', 'clear'];
+
+function styleLines(pairs: Array<[string, string | number | undefined | null]>): string[] {
+  return pairs
+    .filter(([, value]) => value !== undefined && value !== null && value !== '' && value !== 'none')
+    .map(([prop, value]) => `  ${prop}: ${value};`);
+}
+
+/** Build the CSS block for a single component instance, keyed on Gaia selectors. */
+function buildPanelCss(slot: GaiaPanelSlot): string {
+  const el = slot.element;
+  const def = slot.def;
+  const selector = `#${slot.panelId}`;
+  const lines: string[] = [];
+
+  lines.push(`/* ${def.label} — Gaia V2 component root ${selector} (${def.panelClass.split(' ')[0]}) */`);
+  lines.push(`${selector} {`);
+  lines.push(...styleLines([
+    // Width is owned by the V2 column, not the panel — the spec requires
+    // #columns/#column_N to control reflow.
+    ['min-height', el.height ? `${el.height}px` : undefined],
+    ['background-color', el.backgroundColor],
+    ['background-image', el.backgroundImage ? `url('${el.backgroundImage}')` : undefined],
+    ['background-size', el.backgroundImage ? 'cover' : undefined],
+    ['background-position', el.backgroundImage ? 'center' : undefined],
+    ['border', el.borderWidth > 0 ? `${el.borderWidth}px ${el.borderStyle} ${el.borderColor}` : undefined],
+    ['border-radius', el.borderRadius > 0 ? `${el.borderRadius}px` : undefined],
+    ['padding', el.padding > 0 ? `${el.padding}px` : undefined],
+    ['box-shadow', el.boxShadow],
+    ['backdrop-filter', el.backdropFilter],
+    ['overflow', el.overflow],
+    ['color', el.color],
+    ['text-align', el.textAlign !== 'left' ? el.textAlign : undefined],
+    ['font-size', el.fontSize ? `${el.fontSize}px` : undefined],
+    ['font-family', el.fontFamily && el.fontFamily !== 'inherit' ? el.fontFamily : undefined],
+    ['font-weight', el.fontWeight !== 'normal' ? el.fontWeight : undefined],
+    ['font-style', el.fontStyle !== 'normal' ? el.fontStyle : undefined],
+    ['transform', el.rotate ? `rotate(${el.rotate}deg)` : undefined],
+    ['opacity', el.opacity < 100 ? (el.opacity / 100).toFixed(2) : undefined],
+    ['z-index', el.zIndex > 1 ? el.zIndex : undefined],
+  ]));
+  const clipCss = getClipPathCss(el);
+  if (clipCss) lines.push(`  clip-path: ${clipCss};`);
+  const maskCss = getMaskCss(el);
+  if (maskCss.webkitMask) {
+    lines.push(`  -webkit-mask-image: ${maskCss.webkitMask};`);
+    lines.push(`  mask-image: ${maskCss.mask};`);
+  }
+  if (el.animation?.enabled && el.animation.trigger === 'always') {
+    const a = el.animation;
+    lines.push(`  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`);
+  }
+  if (el.customCss) lines.push(`  ${el.customCss}`);
+  lines.push('}');
+
+  if (el.animation?.enabled && el.animation.trigger === 'hover') {
+    const a = el.animation;
+    lines.push(`${selector}:hover {`);
+    lines.push(`  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`);
+    lines.push('}');
+  }
+
+  // Title + inner typography, still authored against the Gaia panel classes.
+  lines.push(`${selector} > h2 {`);
+  lines.push(...styleLines([
+    ['color', el.color !== '#e2e8f0' ? el.color : undefined],
+    ['font-size', el.fontSize ? `${Math.max(12, Math.round(el.fontSize + 2))}px` : undefined],
+    ['font-weight', el.fontWeight !== 'normal' ? el.fontWeight : undefined],
+    ['text-align', el.textAlign !== 'left' ? el.textAlign : undefined],
+  ]));
+  lines.push('}');
+
+  lines.push(`${selector} .postcontent, ${selector} .item, ${selector} p {`);
+  lines.push(`  font-size: ${el.fontSize || 12}px;`);
+  lines.push('}');
+
+  return lines.join('\n');
+}
+
+/** CSS for a freeform group wrapped in a Gaia custom panel (`.panel.custom_panel`). */
+function buildFreeformCss(slot: FreeformSlot): string {
+  const panelId = `id_custom_${slot.customIndex}`;
+  const contentId = `custom_${slot.customIndex}_content`;
+  const parts: string[] = [];
+
+  parts.push(`/* Freeform canvas content wrapped in a Gaia custom panel */`);
+  parts.push(`#${panelId} #${contentId} {`);
+  parts.push(`  position: relative;`);
+  parts.push(`  min-height: ${Math.max(40, Math.round(slot.contentHeight))}px;`);
+  parts.push(`}`);
+
+  slot.elements.forEach((el, idx) => {
+    const marker = el.colorMarker || `#${idx + 1}`;
+    // `[style*=...]` matches both the spec's span carrier and the div carrier
+    // used for block-level payloads.
+    const selector = `#${panelId} #${contentId} [style*='color: ${marker}']`;
+    const clipCss = getClipPathCss(el);
+    const maskCss = getMaskCss(el);
+
+    parts.push(`/* ${el.name} (${el.type}) */`);
+    parts.push(`${selector} {`);
+    parts.push(...styleLines([
+      ['position', 'absolute'],
+      ['left', `${Math.round(el.x - slot.originX)}px`],
+      ['top', `${Math.round(el.y)}px`],
+      ['width', `${el.width}px`],
+      ['height', `${el.height}px`],
+      ['z-index', el.zIndex],
+      ['box-sizing', 'border-box'],
+      ['transform', el.rotate ? `rotate(${el.rotate}deg)` : undefined],
+      ['opacity', el.opacity < 100 ? (el.opacity / 100).toFixed(2) : undefined],
+      ['background-color', el.backgroundColor],
+      ['background-image', el.backgroundImage ? `url('${el.backgroundImage}')` : undefined],
+      ['background-size', el.backgroundImage ? 'cover' : undefined],
+      ['border', el.borderWidth > 0 ? `${el.borderWidth}px ${el.borderStyle} ${el.borderColor}` : undefined],
+      ['border-radius', el.borderRadius > 0 ? `${el.borderRadius}px` : undefined],
+      ['padding', el.padding > 0 ? `${el.padding}px` : undefined],
+      ['box-shadow', el.boxShadow],
+      ['overflow', el.overflow],
+      ['clip-path', clipCss || undefined],
+      ['-webkit-mask-image', maskCss.webkitMask || undefined],
+      ['mask-image', maskCss.mask || undefined],
+      ['color', el.color],
+      ['font-size', `${el.fontSize}px`],
+      ['font-family', el.fontFamily && el.fontFamily !== 'inherit' ? el.fontFamily : undefined],
+      ['text-align', el.textAlign],
+    ]));
+    if (el.animation?.enabled && el.animation.trigger === 'always') {
+      const a = el.animation;
+      parts.push(`  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`);
+    }
+    if (el.customCss) parts.push(`  ${el.customCss}`);
+    parts.push('}');
+
+    if (el.animation?.enabled && el.animation.trigger === 'hover') {
+      const a = el.animation;
+      parts.push(`${selector}:hover {`);
+      parts.push(`  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`);
+      parts.push('}');
+    }
+  });
+
+  return parts.join('\n');
+}
+
+function bandStart(settings: CanvasSettings, column: Column): number {
+  const width = settings.width || 1380;
+  return Math.round(((column - 1) * width) / 3);
+}
+
+function collectColumnSlots(
+  visibleElements: ProfileElement[],
+  settings: CanvasSettings
+): { slots: ColumnSlot[]; customPanelCount: number } {
+  const slots: ColumnSlot[] = [];
+  const freeformByColumn = new Map<Column, ProfileElement[]>();
+  // Custom panel ids must stay unique across authored and freeform panels.
+  let customPanelCount = 0;
+
+  visibleElements.forEach((el, index) => {
+    if (isGaiaPanelElement(el) && el.gaia) {
+      const column = el.gaia.column || 1;
+      const def = getGaiaComponent(el.gaia.kind);
+      let panelId = el.gaia.panelId || def.panelId || '';
+      if (!panelId) {
+        customPanelCount += 1;
+        panelId = `id_custom_${customPanelCount}`;
+      }
+      slots.push({
+        slotKind: 'gaia',
+        element: el,
+        def,
+        column,
+        panelId,
+        index,
+      });
+      return;
+    }
+
+    const width = settings.width || 1380;
+    const center = el.x + el.width / 2;
+    const column: Column = center < width / 3 ? 1 : center < (width * 2) / 3 ? 2 : 3;
+    const list = freeformByColumn.get(column) || [];
+    list.push(el);
+    freeformByColumn.set(column, list);
+  });
+
+  freeformByColumn.forEach((list, column) => {
+    customPanelCount += 1;
+    const ordered = [...list].sort((a, b) => a.y - b.y);
+    const contentHeight = ordered.reduce((max, el) => Math.max(max, el.y + el.height), 0) + 16;
+    slots.push({
+      slotKind: 'freeform',
+      column,
+      elements: ordered,
+      customIndex: customPanelCount,
+      contentHeight,
+      originX: bandStart(settings, column),
+    });
+  });
+
+  const columnRank = (slot: ColumnSlot) => {
+    const order = slot.slotKind === 'gaia' ? slot.element.y : Math.min(...slot.elements.map((e) => e.y));
+    const tie = slot.slotKind === 'gaia' ? slot.index : 0;
+    return [slot.column, order, tie] as const;
+  };
+
+  slots.sort((a, b) => {
+    const ra = columnRank(a);
+    const rb = columnRank(b);
+    return ra[0] - rb[0] || ra[1] - rb[1] || ra[2] - rb[2];
+  });
+
+  return { slots, customPanelCount };
+}
+
 /**
  * Transpile ProfileElements & Canvas Settings to:
- * 1. Pure HTML (No scripts allowed!)
- * 2. Pure CSS (Using CSS Attribute selectors span[style*='color: #1'])
- * 3. Exact BBCode
+ * 1. Pure HTML — a real `#columns` V2 structure with Gaia-supported panels
+ * 2. Pure CSS — selectors that target `.panel`, the component panel classes and ids
+ * 3. BBCode — only when Gaia actually requires it (kept deliberately sparse)
  */
 export function transpileProfile(
   elements: ProfileElement[],
   settings: CanvasSettings
 ): TranspilerOutput {
   const visibleElements = elements.filter((el) => !el.hidden);
+  const { slots } = collectColumnSlots(visibleElements, settings);
 
-  // 1. Generate CSS
-  let cssRules: string[] = [];
+  const gaiaSlots = slots.filter((s): s is GaiaPanelSlot => s.slotKind === 'gaia');
+  const freeformSlots = slots.filter((s): s is FreeformSlot => s.slotKind === 'freeform');
 
-  // Canvas profile container rule
-  cssRules.push(`/* Profile Root Container */
-.profile_container {
-  position: relative;
-  width: ${settings.width}px;
-  min-height: ${settings.height}px;
-  margin: 0 auto;
+  /* ----------------------------- CSS ------------------------------------- */
+
+  const cssBlocks: string[] = [];
+
+  cssBlocks.push(`/* ==========================================================================
+   Gaia V2 Profile CSS — generated by BBStudio
+   Layout owner: #columns > #column_1/2/3. Components are Gaia-supported panels.
+   ========================================================================== */`);
+
+  cssBlocks.push(`/* Page surface (body-level CSS is preserved by Gaia V2 profiles) */
+body#viewer {
+  margin: 0;
+  padding: 0;
   background-color: ${settings.backgroundColor || '#0e111a'};
   ${settings.backgroundImage ? `background-image: url('${settings.backgroundImage}');` : ''}
   ${settings.backgroundRepeat ? `background-repeat: ${settings.backgroundRepeat};` : 'background-repeat: no-repeat;'}
   ${settings.backgroundSize ? `background-size: ${settings.backgroundSize};` : 'background-size: cover;'}
   background-position: center top;
-  overflow: hidden;
-  box-sizing: border-box;
+  background-attachment: ${settings.backgroundAttachment || 'scroll'};
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
   color: #e2e8f0;
 }`);
 
-  // Base rules for required tags
-  cssRules.push(`/* Base Mappings Styles */
-.quote {
-  background: rgba(22, 27, 46, 0.85);
-  border-left: 3px solid #6366f1;
-  padding: 12px 16px;
-  font-style: italic;
-  border-radius: 4px;
-}
+  cssBlocks.push(GAIA_COLUMNS_BASE_CSS);
+  cssBlocks.push(GAIA_PANEL_BASE_CSS);
 
-.user_img {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  object-fit: cover;
-}
-
-.code {
-  background: #090d16;
-  border: 1px solid #1e293b;
-  font-family: 'Courier New', Courier, monospace;
-  padding: 10px 14px;
-  border-radius: 6px;
-  white-space: pre-wrap;
-}
-
-.clear {
-  clear: both;
-  height: 0;
-  overflow: hidden;
-}`);
-
-  // Per-element rules using CSS Attribute Selectors: span[style*='color: #1']
-  visibleElements.forEach((el, idx) => {
-    const marker = el.colorMarker || `#${idx + 1}`;
-    const selector = `span[style*='color: ${marker}']`;
-
-    const clipCss = getClipPathCss(el);
-    const maskCss = getMaskCss(el);
-
-    let animCss = '';
-    if (el.animation && el.animation.enabled) {
-      const a = el.animation;
-      const animRule = `${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction}`;
-      if (a.trigger === 'hover') {
-        animCss = `\n  /* Animation triggered on hover */\n  transition: transform 0.3s ease;`;
-      } else {
-        animCss = `\n  animation: ${animRule};`;
-      }
-    }
-
-    const ruleLines: string[] = [
-      `/* Element: ${el.name} (${el.type}) - Target via CSS Attribute Selector */`,
-      `${selector} {`,
-      `  position: absolute;`,
-      `  left: ${el.x}px;`,
-      `  top: ${el.y}px;`,
-      `  width: ${el.width}px;`,
-      `  height: ${el.height}px;`,
-      `  z-index: ${el.zIndex};`,
-      `  display: block;`,
-      `  box-sizing: border-box;`,
-      el.rotate ? `  transform: rotate(${el.rotate}deg);` : '',
-      el.opacity < 100 ? `  opacity: ${(el.opacity / 100).toFixed(2)};` : '',
-      el.backgroundColor ? `  background-color: ${el.backgroundColor};` : '',
-      el.backgroundImage ? `  background-image: url('${el.backgroundImage}');\n  background-size: cover;\n  background-position: center;` : '',
-      el.borderWidth > 0 ? `  border: ${el.borderWidth}px ${el.borderStyle} ${el.borderColor};` : '',
-      el.borderRadius > 0 ? `  border-radius: ${el.borderRadius}px;` : '',
-      el.padding > 0 ? `  padding: ${el.padding}px;` : '',
-      el.boxShadow && el.boxShadow !== 'none' ? `  box-shadow: ${el.boxShadow};` : '',
-      el.backdropFilter ? `  backdrop-filter: ${el.backdropFilter};` : '',
-      el.overflow ? `  overflow: ${el.overflow};` : '',
-      clipCss ? `  clip-path: ${clipCss};` : '',
-      maskCss.webkitMask ? `  -webkit-mask-image: ${maskCss.webkitMask};\n  mask-image: ${maskCss.mask};` : '',
-      animCss,
-      el.customCss ? `  ${el.customCss}` : '',
-      `}`,
-    ].filter(Boolean);
-
-    // If hover animation trigger
-    if (el.animation && el.animation.enabled && el.animation.trigger === 'hover') {
-      const a = el.animation;
-      ruleLines.push(
-        `${selector}:hover {`,
-        `  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`,
-        `}`
-      );
-    }
-
-    // Inner element styling if needed (e.g. typography or child elements)
-    const typographyLines: string[] = [
-      `${selector} * {`,
-      el.color ? `  color: ${el.color};` : '',
-      el.fontSize ? `  font-size: ${el.fontSize}px;` : '',
-      el.fontFamily ? `  font-family: ${el.fontFamily};` : '',
-      el.textAlign ? `  text-align: ${el.textAlign};` : '',
-      `}`,
-    ].filter(Boolean);
-
-    cssRules.push(ruleLines.join('\n'));
-    if (typographyLines.length > 2) {
-      cssRules.push(typographyLines.join('\n'));
-    }
+  // Default component CSS, emitted once per component kind actually in use.
+  const seenKinds = new Set<string>();
+  gaiaSlots.forEach((slot) => {
+    if (seenKinds.has(slot.def.kind)) return;
+    seenKinds.add(slot.def.kind);
+    cssBlocks.push(slot.def.defaultCss);
   });
 
-  // Append Keyframes
-  cssRules.push(getAnimationKeyframes());
+  // Per-instance overrides + freeform content.
+  gaiaSlots.forEach((slot) => cssBlocks.push(buildPanelCss(slot)));
+  freeformSlots.forEach((slot) => cssBlocks.push(buildFreeformCss(slot)));
 
-  const fullCss = cssRules.join('\n\n');
+  const hasAnimation = visibleElements.some((el) => el.animation?.enabled);
+  if (hasAnimation) cssBlocks.push(getAnimationKeyframes());
 
-  // 2. Generate Pure HTML (No scripts allowed!)
-  const htmlElements = visibleElements.map((el, idx) => {
-    const marker = el.colorMarker || `#${idx + 1}`;
-    let innerHtml = '';
+  const fullCss = cssBlocks.join('\n\n');
 
-    // Apply inline typography spans/tags if specified
-    const styledContent = formatStyledHtml(el);
+  /* ----------------------------- HTML ------------------------------------ */
 
-    switch (el.type) {
-      case 'quote':
-        innerHtml = `<div class="quote">${styledContent}</div>`;
-        break;
-      case 'image':
-        innerHtml = `<img class="user_img" src="${escapeHtml(el.content || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&auto=format&fit=crop&q=80')}" alt="${escapeHtml(el.name)}" />`;
-        break;
-      case 'code':
-        innerHtml = `<div class="code">${escapeHtml(el.content || 'const profile = "epic";')}</div>`;
-        break;
-      case 'clear':
-        innerHtml = `<div class="clear"></div>`;
-        break;
-      case 'video': {
-        const ytid = extractYoutubeId(el.content);
-        innerHtml = `<iframe width="100%" height="100%" src="https://www.youtube-nocookie.com/embed/${ytid}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
-        break;
-      }
-      case 'link':
-        innerHtml = `<a href="${escapeHtml(el.linkUrl || '#')}" target="_blank" rel="noopener noreferrer">${styledContent}</a>`;
-        break;
-      case 'text':
-      case 'box':
-      default:
-        innerHtml = styledContent;
-        break;
+  const renderGaiaSlot = (slot: GaiaPanelSlot): string => {
+    const el = slot.element;
+    const bodyHtml = el.gaia?.bodyHtml ?? slot.def.bodyHtml;
+    const extraStyle = el.height ? `min-height: ${el.height}px` : '';
+    return buildPanelHtml(slot.def.kind, {
+      index: slot.index + 1,
+      title: el.gaia?.title || el.content || slot.def.defaultTitle,
+      bodyHtml,
+      panelId: slot.panelId,
+      extraClass: el.gaia?.extraClass,
+      extraStyle,
+    });
+  };
+
+  const renderFreeformSlot = (slot: FreeformSlot): string => {
+    const panelId = `id_custom_${slot.customIndex}`;
+    const contentId = `custom_${slot.customIndex}_content`;
+    const inner = slot.elements
+      .map((el) => {
+        const marker = el.colorMarker || '#1';
+        // Block-level payloads use a <div> carrier (valid nesting) while inline
+        // payloads keep the spec's `<span style="color: #N">` marker. The CSS
+        // targets both through the attribute selector.
+        const carrier = ['quote', 'code', 'clear', 'video'].includes(el.type) ? 'div' : 'span';
+        return `    <${carrier} style="color: ${marker}">\n${indent(renderElementHtml(el), 6)}\n    </${carrier}>`;
+      })
+      .join('\n');
+    return `<div class="panel custom_panel postcontent" id="${panelId}">
+  <h2 id="custom_${slot.customIndex}_title">Custom</h2>
+  <div id="${contentId}">
+${inner}
+  </div>
+  <div class="clear"></div>
+</div>`;
+  };
+
+  const renderColumn = (column: Column): string => {
+    const columnSlots = slots.filter((slot) => slot.column === column);
+    const body = columnSlots
+      .map((slot) => indent(slot.slotKind === 'gaia' ? renderGaiaSlot(slot) : renderFreeformSlot(slot), 4))
+      .join('\n');
+    return `  <div id="column_${column}" class="column focus_column">
+${body || '    <!-- empty column -->'}
+  </div>`;
+  };
+
+  const columnsHtml = `<div id="columns">
+${[1, 2, 3].map((c) => renderColumn(c as Column)).join('\n')}
+</div>`;
+
+  const fullDocument = buildV2Document(columnsHtml, fullCss, settings.profileTitle || 'Gaia Profile');
+
+  /* ----------------------------- BBCode ---------------------------------- */
+
+  const bbcodeRequiredComponents = gaiaSlots.filter((slot) => slot.def.bbcodeRequired);
+  const bbcodeOnlyFreeform = freeformSlots
+    .flatMap((slot) => slot.elements)
+    .filter((el) => BBCODE_ONLY_TYPES.includes(el.type));
+  const bbcodeNeeded = bbcodeRequiredComponents.length > 0 || (gaiaSlots.length === 0 && bbcodeOnlyFreeform.length > 0);
+
+  let bbcode = '';
+  let bbcodeReason = 'Not needed — every section is authored as a Gaia-supported HTML panel.';
+
+  if (bbcodeNeeded) {
+    const bbParts: string[] = [];
+    if (bbcodeRequiredComponents.length > 0) {
+      bbcodeReason = `Needed for ${bbcodeRequiredComponents
+        .map((slot) => slot.def.label)
+        .join(', ')} — Gaia serves this content from a BBCode field.`;
+      bbcodeRequiredComponents.forEach((slot) => {
+        if (!slot.def.bbcodeTemplate) return;
+        bbParts.push(`[/${slot.def.label}]`.replace('[/', '[')); // placeholder replaced below
+        bbParts.pop();
+        bbParts.push(`[b]${slot.def.label}[/b]\n${slot.def.bbcodeTemplate}`);
+      });
+    } else {
+      bbcodeReason =
+        'Needed for freeform content (quotes, code, embeds, images, links) that Gaia only accepts through BBCode.';
+    }
+    if (bbcodeOnlyFreeform.length > 0) {
+      bbParts.push(bbcodeOnlyFreeform.map((el) => renderElementBbcode(el)).join('\n\n'));
     }
 
-    // Wrap in CSS Attribute Selector carrier: <span style="color: #1">
-    return `  <!-- ${el.name} (${el.type}) -->\n  <span style="color: ${marker}">\n    ${innerHtml}\n  </span>`;
-  });
-
-  const fullHtml = `<div class="profile_container">\n${htmlElements.join('\n\n')}\n</div>`;
-
-  // 3. Generate BBCode
-  // Using the mappings:
-  // [color], [strike], [u] -> <span>
-  // [b], [i] -> <b>, <i>
-  // [quote] -> <div class="quote">
-  // [url] -> <a>
-  // [clear ] -> <div class="clear">
-  // [youtube] -> <iframe>
-  // [img] -> <img class="user_img">
-  // [code] -> <div class="code">
-  const bbcodeElements = visibleElements.map((el, idx) => {
-    const marker = el.colorMarker || `#${idx + 1}`;
-    let innerBB = '';
-
-    const contentBB = formatStyledBBCode(el);
-
-    switch (el.type) {
-      case 'quote':
-        innerBB = `[quote]${contentBB}[/quote]`;
-        break;
-      case 'image':
-        innerBB = `[img]${el.content || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=500&auto=format&fit=crop&q=80'}[/img]`;
-        break;
-      case 'code':
-        innerBB = `[code]${el.content || 'const profile = "epic";'}[/code]`;
-        break;
-      case 'clear':
-        innerBB = `[clear ]`;
-        break;
-      case 'video': {
-        const ytid = extractYoutubeId(el.content);
-        innerBB = `[youtube]${ytid}[/youtube]`;
-        break;
-      }
-      case 'link':
-        innerBB = `[url=${el.linkUrl || 'https://example.com'}]${contentBB}[/url]`;
-        break;
-      case 'text':
-      case 'box':
-      default:
-        innerBB = contentBB;
-        break;
+    if (bbcodeRequiredComponents.length > 0) {
+      // HTML panels carry the layout; BBCode is limited to the payloads Gaia
+      // serves from a BBCode field (signature / comment bodies).
+      bbcode = bbParts.join('\n\n');
+    } else {
+      // Freeform-only profile: the CSS must travel with the BBCode.
+      bbcode = `[style]\n${fullCss}\n[/style]\n\n${bbParts.join('\n\n')}`;
     }
+  }
 
-    // The [color=#X] tag transpiles directly to <span style="color: #X">
-    return `[color=${marker}]\n${innerBB}\n[/color]`;
-  });
+  /* --------------------------- Registry ---------------------------------- */
 
-  const fullBBCode = `[style]\n${fullCss}\n[/style]\n\n${bbcodeElements.join('\n\n')}`;
+  const gaiaComponents: GaiaComponentUsage[] = gaiaSlots.map((slot) => ({
+    kind: slot.def.kind,
+    label: slot.def.label,
+    column: slot.column,
+    panelId: slot.panelId,
+    panelClass: slot.def.panelClass,
+    selector: `#${slot.panelId}`,
+  }));
 
   const mappings = [
-    { bbcode: `[color=${visibleElements[0]?.colorMarker || '#1'}]`, html: `<span style="color: ${visibleElements[0]?.colorMarker || '#1'}">`, description: 'Attribute Selector anchor & color styling', selector: `span[style*='color: ${visibleElements[0]?.colorMarker || '#1'}']` },
-    { bbcode: '[strike]text[/strike]', html: '<span style="text-decoration: line-through">text</span>', description: 'Strikethrough text decoration', selector: 'span' },
-    { bbcode: '[u]text[/u]', html: '<span style="text-decoration: underline">text</span>', description: 'Underline text decoration', selector: 'span' },
-    { bbcode: '[b]bold text[/b]', html: '<b>bold text</b>', description: 'Bold font styling', selector: 'b' },
-    { bbcode: '[i]italic text[/i]', html: '<i>italic text</i>', description: 'Italic font styling', selector: 'i' },
-    { bbcode: '[quote]...[/quote]', html: '<div class="quote">...</div>', description: 'Quote block container', selector: 'div.quote' },
-    { bbcode: '[url=https://...]text[/url]', html: '<a href="https://...">text</a>', description: 'Hyperlink anchor', selector: 'a' },
-    { bbcode: '[clear ]', html: '<div class="clear"></div>', description: 'Clear floats element', selector: 'div.clear' },
-    { bbcode: '[youtube]VIDEO_ID[/youtube]', html: '<iframe src="..."></iframe>', description: 'Embedded video player', selector: 'iframe' },
-    { bbcode: '[img]URL[/img]', html: '<img class="user_img" src="URL">', description: 'User image component', selector: 'img.user_img' },
-    { bbcode: '[code]...[/code]', html: '<div class="code">...</div>', description: 'Code block component', selector: 'div.code' },
+    { bbcode: '[style]...[/style]', html: '<style> in <head>', description: 'Profile CSS block', selector: '#columns, .panel' },
+    ...gaiaComponents.map((component) => ({
+      bbcode: component.kind === 'custom' ? '(HTML only)' : `[${component.kind}]`,
+      html: `<div class="panel ${component.panelClass}" id="${component.panelId}">`,
+      description: `${component.label} panel in column ${component.column}`,
+      selector: component.selector,
+    })),
   ];
 
   return {
-    html: fullHtml,
+    html: columnsHtml,
+    columnsHtml,
     css: fullCss,
-    bbcode: fullBBCode,
-    fullOutput: `<style>\n${fullCss}\n</style>\n\n${fullHtml}`,
+    bbcode,
+    bbcodeNeeded,
+    bbcodeReason,
+    fullOutput: `<style>\n${fullCss}\n</style>\n\n${columnsHtml}`,
+    fullDocument,
+    gaiaComponents,
     mappings,
   };
+}
+
+/** Render a freeform element as export HTML (used inside custom panels). */
+function renderElementHtml(el: ProfileElement): string {
+  const styledContent = formatStyledHtml(el);
+  switch (el.type) {
+    case 'quote':
+      return `<div class="quote">${styledContent}</div>`;
+    case 'image':
+      return `<img class="user_img" src="${escapeHtml(el.content || '')}" alt="${escapeHtml(el.name)}">`;
+    case 'code':
+      return `<div class="code">${escapeHtml(el.content || '')}</div>`;
+    case 'clear':
+      return '<div class="clear"></div>';
+    case 'video': {
+      const ytid = extractYoutubeId(el.content);
+      return `<iframe width="100%" height="100%" src="https://www.youtube-nocookie.com/embed/${ytid}" frameborder="0" allowfullscreen></iframe>`;
+    }
+    case 'link':
+      return `<a href="${escapeHtml(el.linkUrl || '#')}" target="_blank" rel="noopener noreferrer">${styledContent}</a>`;
+    case 'box':
+    case 'text':
+    default:
+      return styledContent;
+  }
+}
+
+/** BBCode is only emitted for content Gaia cannot express as panel HTML. */
+function renderElementBbcode(el: ProfileElement): string {
+  const contentBB = formatStyledBBCode(el);
+  switch (el.type) {
+    case 'quote':
+      return `[quote]${contentBB}[/quote]`;
+    case 'image':
+      return `[img]${el.content || ''}[/img]`;
+    case 'code':
+      return `[code]${el.content || ''}[/code]`;
+    case 'clear':
+      return '[clear ]';
+    case 'video':
+      return `[youtube]${extractYoutubeId(el.content)}[/youtube]`;
+    case 'link':
+      return `[url=${el.linkUrl || '#'}]${contentBB}[/url]`;
+    default:
+      return contentBB;
+  }
 }
 
 function escapeHtml(str: string): string {

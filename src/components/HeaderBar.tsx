@@ -182,7 +182,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
 
           <button
             onClick={() => onChangeViewMode('transpiler')}
-            title="BBCode & CSS Transpiler"
+            title="View Code — Columns HTML, CSS, BBCode"
             className={`flex items-center gap-1 rounded-lg px-2 sm:px-3 py-1 text-xs font-medium transition-all ${
               viewMode === 'transpiler'
                 ? 'bg-indigo-600 text-white shadow-md'

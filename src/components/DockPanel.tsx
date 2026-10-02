@@ -47,6 +47,13 @@ import {
 } from './EditableImportedCanvas';
 import { ImportedNodePropertiesPanel } from './ImportedNodePropertiesPanel';
 import { ImportedHierarchyTree } from './ImportedHierarchyTree';
+import {
+  GAIA_CATEGORIES,
+  GAIA_COMPONENT_LIST,
+  GaiaComponentKind,
+  getGaiaComponent,
+  panelIdFor,
+} from '../utils/gaiaSpec';
 
 export type DockTab =
   | 'elements'
@@ -238,22 +245,60 @@ export const DockPanel: React.FC<DockPanelProps> = ({
     { type: 'box', label: 'Container Box', icon: <Box className="w-4 h-4 text-blue-400" />, bbcode: '<span>', desc: 'Backdrop card/container' },
   ];
 
-  const dedicatedComponents: Array<{ kind: ImportedDedicatedComponentKind; label: string; icon: React.ReactNode; tone: string }> = [
-    { kind: 'details', label: 'Details', icon: <Type className="w-4 h-4" />, tone: 'blue' },
-    { kind: 'equipment', label: 'Equipped', icon: <Box className="w-4 h-4" />, tone: 'violet' },
-    { kind: 'contact', label: 'Contact', icon: <ExternalLink className="w-4 h-4" />, tone: 'rose' },
-    { kind: 'forums', label: 'Forums', icon: <Code2 className="w-4 h-4" />, tone: 'slate' },
-    { kind: 'signature', label: 'Signature', icon: <Type className="w-4 h-4" />, tone: 'pink' },
-    { kind: 'house', label: 'House', icon: <Box className="w-4 h-4" />, tone: 'lime' },
-    { kind: 'footprints', label: 'Visitors', icon: <Users className="w-4 h-4" />, tone: 'sky' },
-    { kind: 'about', label: 'About', icon: <BookOpen className="w-4 h-4" />, tone: 'teal' },
-    { kind: 'store', label: 'Store', icon: <BookmarkPlus className="w-4 h-4" />, tone: 'orange' },
-    { kind: 'badges', label: 'Badges', icon: <Sparkles className="w-4 h-4" />, tone: 'yellow' },
-    { kind: 'comments', label: 'Comments', icon: <MessageSquare className="w-4 h-4" />, tone: 'cyan' },
-    { kind: 'wishlist', label: 'Wishlist', icon: <Gift className="w-4 h-4" />, tone: 'fuchsia' },
-    { kind: 'journal', label: 'Journal', icon: <BookOpen className="w-4 h-4" />, tone: 'emerald' },
-    { kind: 'friends', label: 'Friends', icon: <Users className="w-4 h-4" />, tone: 'amber' },
-  ];
+  /**
+   * Every Gaia-supported V2 category is a first-class component.
+   * Imported profiles insert real panel DOM; freeform profiles create a
+   * `gaia-panel` element that code-generates the same V2 structure.
+   */
+  const gaiaIconFor = (kind: GaiaComponentKind): React.ReactNode => {
+    switch (kind) {
+      case 'details':
+        return <Type className="w-4 h-4" />;
+      case 'equipment':
+      case 'house':
+      case 'custom':
+        return <Box className="w-4 h-4" />;
+      case 'contact':
+        return <ExternalLink className="w-4 h-4" />;
+      case 'forums':
+        return <Code2 className="w-4 h-4" />;
+      case 'signature':
+        return <QuoteIcon className="w-4 h-4" />;
+      case 'footprints':
+      case 'friends':
+        return <Users className="w-4 h-4" />;
+      case 'about':
+      case 'journal':
+        return <BookOpen className="w-4 h-4" />;
+      case 'store':
+        return <BookmarkPlus className="w-4 h-4" />;
+      case 'badges':
+        return <Sparkles className="w-4 h-4" />;
+      case 'comments':
+        return <MessageSquare className="w-4 h-4" />;
+      case 'wishlist':
+        return <Gift className="w-4 h-4" />;
+      default:
+        return <Box className="w-4 h-4" />;
+    }
+  };
+
+  const addGaiaComponent = (kind: GaiaComponentKind) => {
+    const def = getGaiaComponent(kind);
+    if (importedProfile?.renderMode === 'canvas' && importedNodeActions) {
+      importedNodeActions.addDedicatedComponent(kind as ImportedDedicatedComponentKind);
+    } else {
+      onAddElement('gaia-panel', {
+        gaia: { kind, column: def.defaultColumn, title: def.defaultTitle },
+      });
+    }
+    onSelectTab('properties');
+  };
+
+  const gaiaCategoryGroups = GAIA_CATEGORIES.map((category) => ({
+    category,
+    components: GAIA_COMPONENT_LIST.filter((def) => def.category === category),
+  })).filter((group) => group.components.length > 0);
 
   const dockTabsConfig: Array<{ id: DockTab; label: string; icon: React.ReactNode; badge?: React.ReactNode }> = [
     { id: 'elements', label: 'Add', icon: <PlusCircle className="h-4 w-4" /> },
@@ -372,31 +417,54 @@ export const DockPanel: React.FC<DockPanelProps> = ({
             <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs text-slate-300 pb-20 md:pb-6">
               {activeTab === 'elements' && (
                 <div className="space-y-3">
-                  {importedProfile?.renderMode === 'canvas' && importedNodeActions && (
-                    <section className="border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-2">
-                      <div className="text-[11px] font-semibold text-cyan-200">Dedicated Gaia Components</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        {dedicatedComponents.map((item) => (
-                          <button
-                            key={item.kind}
-                            draggable
-                            onDragStart={(e) => {
-                              e.dataTransfer.setData('application/imported-dedicated-kind', item.kind);
-                              e.dataTransfer.effectAllowed = 'copyMove';
-                            }}
-                            onClick={() => {
-                              importedNodeActions.addDedicatedComponent(item.kind);
-                              onSelectTab('properties');
-                            }}
-                            className="flex items-center gap-2 border border-slate-800 bg-slate-950/60 p-2 text-left hover:border-indigo-500 hover:bg-indigo-500/10"
-                          >
-                            <span className="shrink-0">{item.icon}</span>
-                            <span className="text-[11px] font-semibold">{item.label}</span>
-                          </button>
-                        ))}
+                  <section className="border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-semibold text-cyan-200">
+                        Gaia V2 Components
                       </div>
-                    </section>
-                  )}
+                      <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[9px] font-mono text-cyan-300">
+                        {GAIA_COMPONENT_LIST.length} categories
+                      </span>
+                    </div>
+                    <p className="text-[10px] leading-relaxed text-slate-400">
+                      Every section the spec supports. Each one generates Gaia-native markup
+                      (<code className="text-cyan-300">#columns &gt; .column &gt; .panel</code>) and
+                      CSS keyed on the real panel classes and ids.
+                    </p>
+                    {gaiaCategoryGroups.map((group) => (
+                      <div key={group.category} className="space-y-1.5">
+                        <div className="text-[9px] uppercase tracking-wider text-slate-500">
+                          {group.category}
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {group.components.map((item) => (
+                            <button
+                              key={item.kind}
+                              draggable
+                              title={item.description}
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData('application/imported-dedicated-kind', item.kind);
+                                e.dataTransfer.setData('application/gaia-component-kind', item.kind);
+                                e.dataTransfer.effectAllowed = 'copyMove';
+                              }}
+                              onClick={() => addGaiaComponent(item.kind)}
+                              className="flex items-center gap-2 border border-slate-800 bg-slate-950/60 p-2 text-left hover:border-indigo-500 hover:bg-indigo-500/10"
+                            >
+                              <span className="shrink-0 text-cyan-300">{gaiaIconFor(item.kind)}</span>
+                              <span className="min-w-0">
+                                <span className="block truncate text-[11px] font-semibold">
+                                  {item.label}
+                                </span>
+                                <span className="block truncate font-mono text-[9px] text-slate-500">
+                                  {item.panelId || 'id_custom_####'}
+                                </span>
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </section>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-1 gap-2">
                     {elementTemplates.map((item) => (
@@ -533,6 +601,100 @@ export const DockPanel: React.FC<DockPanelProps> = ({
                           Save Custom
                         </button>
                       </div>
+
+                      {selectedElement.type === 'gaia-panel' && selectedElement.gaia && (
+                        <div className="border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-2">
+                          <div className="text-[11px] font-semibold text-cyan-200">
+                            Gaia V2 Component
+                          </div>
+
+                          <label className="block">
+                            <span className="block text-[10px] text-slate-400 mb-1">Category</span>
+                            <select
+                              value={selectedElement.gaia.kind}
+                              onChange={(e) => {
+                                const kind = e.target.value as GaiaComponentKind;
+                                const def = getGaiaComponent(kind);
+                                onUpdateElement({
+                                  gaia: {
+                                    ...selectedElement.gaia!,
+                                    kind,
+                                    title: def.defaultTitle,
+                                    panelId: def.panelId || undefined,
+                                  },
+                                });
+                              }}
+                              className="w-full border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 focus:border-indigo-500 focus:outline-none"
+                            >
+                              {GAIA_CATEGORIES.map((category) => (
+                                <optgroup key={category} label={category}>
+                                  {GAIA_COMPONENT_LIST.filter((d) => d.category === category).map((d) => (
+                                    <option key={d.kind} value={d.kind}>
+                                      {d.label}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="block">
+                            <span className="block text-[10px] text-slate-400 mb-1">
+                              Panel title (h2)
+                            </span>
+                            <input
+                              type="text"
+                              value={selectedElement.gaia.title || ''}
+                              onChange={(e) =>
+                                onUpdateElement({
+                                  gaia: { ...selectedElement.gaia!, title: e.target.value },
+                                })
+                              }
+                              className="w-full border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100 focus:border-indigo-500 focus:outline-none"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <span className="block text-[10px] text-slate-400 mb-1">
+                              Column placement
+                            </span>
+                            <div className="grid grid-cols-3 gap-1">
+                              {([1, 2, 3] as const).map((column) => (
+                                <button
+                                  key={column}
+                                  onClick={() =>
+                                    onUpdateElement({
+                                      gaia: { ...selectedElement.gaia!, column },
+                                    })
+                                  }
+                                  className={`border px-2 py-1 text-[10px] font-semibold transition-colors ${
+                                    selectedElement.gaia!.column === column
+                                      ? 'border-cyan-500 bg-cyan-600/30 text-cyan-100'
+                                      : 'border-slate-700 bg-slate-950 text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  col {column}
+                                </button>
+                              ))}
+                            </div>
+                          </label>
+
+                          <div className="space-y-0.5 font-mono text-[10px] text-slate-500">
+                            <div>
+                              panel: .panel.{getGaiaComponent(selectedElement.gaia.kind).panelClass.split(' ')[0]}
+                              {selectedElement.gaia.panelId
+                                ? ` #${selectedElement.gaia.panelId}`
+                                : ` #${panelIdFor(getGaiaComponent(selectedElement.gaia.kind), 1)}`}
+                            </div>
+                            <div>layout: #columns &gt; #column_{selectedElement.gaia.column}</div>
+                            {getGaiaComponent(selectedElement.gaia.kind).bbcodeRequired && (
+                              <div className="text-pink-300">
+                                BBCode: used only for this component&apos;s body content
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                       {['text', 'quote', 'code', 'link'].includes(selectedElement.type) && (
                         <textarea

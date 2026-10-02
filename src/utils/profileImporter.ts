@@ -1,5 +1,41 @@
 import { ProfileElement, CanvasSettings } from '../types/profile';
 import { CLIP_PRESETS } from './presets';
+import {
+  GAIA_COMPONENT_ROOT_SELECTOR,
+  createGaiaPanelElement,
+  detectGaiaComponentKind,
+  getGaiaComponent,
+  isGaiaComponentKind,
+  xForColumn,
+} from './gaiaSpec';
+
+/** Background resolved from the profile's CSS/inline styles (style, not <img>). */
+export interface DetectedBackground {
+  detected: boolean;
+  color?: string;
+  image?: string;
+  repeat?: string;
+  size?: string;
+  position?: string;
+  attachment?: string;
+  /** Human readable origin, e.g. `body CSS rule (linked stylesheet)`. */
+  source: string;
+}
+
+export interface ImportDiagnostics {
+  stylesheetsFound: number;
+  stylesheetsFetched: number;
+  stylesheetUrls: Array<{ url: string; ok: boolean }>;
+  background: DetectedBackground;
+  components: Array<{
+    kind: string;
+    label: string;
+    count: number;
+    columns: number[];
+    panelIds: string[];
+  }>;
+  warnings: string[];
+}
 
 export interface ImportResult {
   elements: ProfileElement[];
@@ -8,6 +44,7 @@ export interface ImportResult {
   rawCss: string;
   scriptsRemoved: number;
   sourceUrl: string;
+  diagnostics: ImportDiagnostics;
 }
 
 const V2_UNSUPPORTED_MESSAGE =
@@ -89,6 +126,199 @@ export function sanitizeHtml(html: string): { clean: string; scriptsRemoved: num
   return { clean: withoutJsUrls, scriptsRemoved };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Background scraping                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Gaia profiles frequently paint their surface with CSS instead of an <img>:
+ *
+ *   body { background: #000 url(/bg/starfield.png) no-repeat fixed center; }
+ *   <body style="background-image:url(...)">   ← inline style
+ *   <body background="/bg/old_school.gif">     ← legacy attribute
+ *
+ * This walks every place a background can hide and returns one resolved value
+ * so the editor can always render it (even inside the shadow DOM).
+ */
+export function detectProfileBackground(
+  doc: Document,
+  css: string,
+  baseUrl: string
+): DetectedBackground {
+  const result: DetectedBackground = { detected: false, source: 'not found' };
+  const decls: Record<string, string> = {};
+  const sources: string[] = [];
+
+  const applyDeclarations = (block: Record<string, string>, source: string) => {
+    const mapped: Record<string, string> = {};
+    if (block['background']) {
+      const shorthand = expandBackgroundShorthand(block['background'], baseUrl);
+      Object.assign(mapped, shorthand);
+    }
+    if (block['background-color']) mapped['background-color'] = block['background-color'];
+    if (block['background-image']) mapped['background-image'] = block['background-image'];
+    if (block['background-repeat']) mapped['background-repeat'] = block['background-repeat'];
+    if (block['background-size']) mapped['background-size'] = block['background-size'];
+    if (block['background-position']) mapped['background-position'] = block['background-position'];
+    if (block['background-attachment']) mapped['background-attachment'] = block['background-attachment'];
+    if (Object.keys(mapped).length === 0) return;
+    Object.assign(decls, mapped);
+    sources.push(source);
+  };
+
+  // 1) CSS rules that style the page surface.
+  const rootSelectors = new Set(['html', 'body', '#viewer', 'html body', 'body#viewer', '*']);
+  const ruleRegex = /([^{}]+)\{([^{}]*)\}/g;
+  const cssNoComments = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  let match: RegExpExecArray | null;
+  while ((match = ruleRegex.exec(cssNoComments)) !== null) {
+    const selectors = match[1]
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (!selectors.some((selector) => rootSelectors.has(selector))) continue;
+    applyDeclarations(parseInlineStyle(match[2]), `CSS rule (${selectors.join(', ')})`);
+  }
+
+  // 2) Inline styles on <html>, <body>, #viewer.
+  const roots: Array<[string, Element | null]> = [
+    ['<html> inline style', doc.documentElement],
+    ['<body> inline style', doc.body],
+    ['#viewer inline style', doc.getElementById('viewer')],
+  ];
+  roots.forEach(([label, el]) => {
+    if (!el) return;
+    const styleAttr = el.getAttribute('style');
+    if (styleAttr) applyDeclarations(parseInlineStyle(rewriteCssUrls(styleAttr, baseUrl)), label);
+  });
+
+  // 3) Legacy `background="..."` attribute (style, not <img>).
+  roots.forEach(([label, el]) => {
+    if (!el) return;
+    const legacy = el.getAttribute('background');
+    if (legacy) {
+      const absolute = safeAbsoluteUrl(legacy, baseUrl);
+      decls['background-image'] = `url('${absolute}')`;
+      sources.push(`${label.replace('inline style', 'background attribute')}`);
+    }
+  });
+
+  const image = normalizeBackgroundImage(decls['background-image']);
+  const color = decls['background-color'] && !/^transparent$/i.test(decls['background-color'])
+    ? decls['background-color']
+    : undefined;
+
+  if (image || color) {
+    result.detected = true;
+    result.image = image;
+    result.color = color;
+    result.repeat = decls['background-repeat'];
+    result.size = decls['background-size'];
+    result.position = decls['background-position'];
+    result.attachment = decls['background-attachment'];
+    result.source = sources.length ? sources.join(' + ') : 'detected style';
+  }
+
+  return result;
+}
+
+/** `url("x")` → `x`; `none` → undefined. */
+function normalizeBackgroundImage(value?: string): string | undefined {
+  if (!value) return undefined;
+  if (/^none$/i.test(value.trim())) return undefined;
+  const url = value.match(/url\(\s*(['"]?)([^'")]+)\1\s*\)/i);
+  return url ? url[2].trim() : undefined;
+}
+
+/**
+ * Expand `background: #000 url(x) no-repeat fixed center` using the browser's
+ * own parser (works for any valid shorthand, including gradients).
+ */
+function expandBackgroundShorthand(value: string, baseUrl: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    const probe = document.createElement('div');
+    probe.style.background = rewriteCssUrls(value, baseUrl);
+    const style = probe.style;
+    if (style.backgroundColor) out['background-color'] = style.backgroundColor;
+    if (style.backgroundImage) out['background-image'] = style.backgroundImage;
+    if (style.backgroundRepeat) out['background-repeat'] = style.backgroundRepeat;
+    if (style.backgroundSize) out['background-size'] = style.backgroundSize;
+    if (style.backgroundPosition) out['background-position'] = style.backgroundPosition;
+    if (style.backgroundAttachment) out['background-attachment'] = style.backgroundAttachment;
+  } catch {
+    /* fall through — malformed shorthand is ignored */
+  }
+  return out;
+}
+
+function safeAbsoluteUrl(value: string, baseUrl: string): string {
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Append a clearly-marked surface rule so the background renders even when the
+ * original selector cannot match inside the editor (shadow DOM) or when the
+ * linked stylesheet could not be fetched.
+ */
+export function augmentCssWithBackground(css: string, background: DetectedBackground): string {
+  if (!background.detected) return css;
+  const lines = [
+    '/* ------------------------------------------------------------------',
+    '   Profile surface detected by BBStudio import',
+    `   Source: ${background.source}`,
+    '   Applied to html/body/#viewer so the background always renders.',
+    '   Safe to delete if your profile already paints its own surface.',
+    '   ------------------------------------------------------------------ */',
+    'html, body, body#viewer {',
+    `  background-color: ${background.color || 'transparent'};`,
+    `  background-image: ${background.image ? `url('${background.image}')` : 'none'};`,
+    `  background-repeat: ${background.repeat || (background.image ? 'repeat' : 'no-repeat')};`,
+    `  background-size: ${background.size || (background.image ? 'auto' : 'auto')};`,
+    `  background-position: ${background.position || 'left top'};`,
+    `  background-attachment: ${background.attachment || 'scroll'};`,
+    '}',
+  ];
+  return `${css}\n\n${lines.join('\n')}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Component scraping                                                          */
+/* -------------------------------------------------------------------------- */
+
+function scrapeGaiaComponents(doc: Document): ImportDiagnostics['components'] {
+  const map = new Map<string, { kind: string; label: string; count: number; columns: number[]; panelIds: string[] }>();
+  const roots = Array.from(doc.querySelectorAll(GAIA_COMPONENT_ROOT_SELECTOR));
+
+  roots.forEach((el) => {
+    // Skip nested roots — the outermost panel is the component.
+    if (roots.some((other) => other !== el && other.contains(el))) return;
+    const kind = detectGaiaComponentKind(el);
+    if (!kind) return;
+    const def = getGaiaComponent(kind);
+    const columnEl = el.closest('[id^="column_"]');
+    const column = columnEl ? Number((columnEl.getAttribute('id') || '').replace('column_', '')) : 0;
+    const entry = map.get(kind) || {
+      kind,
+      label: def.label,
+      count: 0,
+      columns: [] as number[],
+      panelIds: [] as string[],
+    };
+    entry.count += 1;
+    const panelId = el.getAttribute('id') || (kind === 'custom' ? 'id_custom_####' : `#${kind}`);
+    if (!entry.panelIds.includes(panelId)) entry.panelIds.push(panelId);
+    if (column && !entry.columns.includes(column)) entry.columns.push(column);
+    map.set(kind, entry);
+  });
+
+  return Array.from(map.values());
+}
+
 function assertGaiaV2DefaultLayout(doc: Document): void {
   const hasV2Columns =
     !!doc.querySelector('#columns') &&
@@ -101,8 +331,20 @@ function assertGaiaV2DefaultLayout(doc: Document): void {
 }
 
 /** Extract all CSS text preserving original <head> order as closely as possible. */
-export async function extractCss(doc: Document, baseUrl: string): Promise<string> {
+export async function extractCss(
+  doc: Document,
+  baseUrl: string,
+  onProgress?: (msg: string) => void
+): Promise<{ css: string; stylesheets: Array<{ url: string; ok: boolean }> }> {
   const cssBlocks: string[] = [];
+  const stylesheets: Array<{ url: string; ok: boolean }> = [];
+
+  const collectStyledNodes = (container: ParentNode | null) => {
+    if (!container) return;
+    Array.from((container as Document).querySelectorAll('style')).forEach((styleEl) => {
+      if (styleEl.textContent) cssBlocks.push(rewriteCssUrls(styleEl.textContent, baseUrl));
+    });
+  };
 
   const headNodes = Array.from(doc.head?.childNodes || []);
   for (const node of headNodes) {
@@ -121,20 +363,20 @@ export async function extractCss(doc: Document, baseUrl: string): Promise<string
         const absolute = new URL(href, baseUrl).toString();
         const css = await fetchProfileHtml(absolute);
         cssBlocks.push(`/* From ${absolute} */\n${rewriteCssUrls(css, absolute)}`);
+        stylesheets.push({ url: absolute, ok: true });
+        onProgress?.(`Stylesheet loaded (${(css.length / 1024).toFixed(1)}KB): ${absolute}`);
+        // Keep the <link> in the document so the editable canvas can load it too.
       } catch {
-        // Keep going; some stylesheets may be blocked even when the page itself isn't.
+        stylesheets.push({ url: new URL(href, baseUrl).toString(), ok: false });
+        onProgress?.(`Stylesheet blocked: ${href}`);
       }
     }
   }
 
-  // Fallback: if head traversal found nothing, still scan stray <style> blocks.
-  if (cssBlocks.length === 0) {
-    doc.querySelectorAll('style').forEach((s) => {
-      if (s.textContent) cssBlocks.push(rewriteCssUrls(s.textContent, baseUrl));
-    });
-  }
+  // Some profiles keep <style> blocks in the body (inside #columns or panels).
+  collectStyledNodes(doc.body);
 
-  return withGaiaPanelBaseCss(doc, cssBlocks.join('\n\n'));
+  return { css: withGaiaPanelBaseCss(doc, cssBlocks.join('\n\n')), stylesheets };
 }
 
 function rewriteCssUrls(css: string, baseUrl: string): string {
@@ -268,6 +510,28 @@ export function reconstructElements(
   if (bgImg) {
     const m = bgImg.match(/url\(['"]?([^'")]+)['"]?\)/i);
     if (m) settings.backgroundImage = m[1];
+  }
+
+  // 0) Gaia V2 path — every dedicated component becomes a first-class
+  //    `gaia-panel` element so the editor styles it with Gaia-supported
+  //    selectors instead of guessing at freeform boxes.
+  const gaiaPanels = buildGaiaPanelElements(doc);
+  if (gaiaPanels.length > 0) {
+    const panelDomNodes = Array.from(doc.querySelectorAll(GAIA_COMPONENT_ROOT_SELECTOR));
+    const markerSpans = Array.from(
+      doc.querySelectorAll('span[style*="color: #"], span[style*="color:#"]')
+    ).filter((span) => !panelDomNodes.some((panel) => panel.contains(span))) as HTMLElement[];
+
+    const leftovers: ProfileElement[] = [];
+    markerSpans.forEach((span, idx) => {
+      const styleAttr = span.getAttribute('style') || '';
+      if (!/color\s*:\s*#\d+\b/i.test(styleAttr)) return;
+      const markerMatch = styleAttr.match(/color\s*:\s*(#\d+)/i);
+      const el = buildElementFromSpan(span, markerMatch ? markerMatch[1] : `#${idx + 1}`, rules, idx);
+      if (el) leftovers.push(el);
+    });
+
+    return { elements: [...gaiaPanels, ...leftovers], settings };
   }
 
   // 1) Round-trip path: BBStudio marker spans
@@ -416,6 +680,83 @@ function isVisibleEnough(node: HTMLElement): boolean {
   if (/display\s*:\s*none/i.test(style)) return false;
   if (/visibility\s*:\s*hidden/i.test(style)) return false;
   return true;
+}
+
+/**
+ * Convert every Gaia V2 panel in the document into a `gaia-panel` element.
+ * This keeps the editor aligned with the spec: Comments stay Comments, Friends
+ * stay Friends, and code generation can target the real panel classes.
+ */
+function buildGaiaPanelElements(doc: Document): ProfileElement[] {
+  const roots = Array.from(doc.querySelectorAll(GAIA_COMPONENT_ROOT_SELECTOR)).filter(
+    (el) => !el.getAttribute('data-bb-skip-component')
+  );
+  // Keep only outermost component roots (ignore nested markup inside a panel).
+  const outerRoots = roots.filter((el) => !roots.some((other) => other !== el && other.contains(el)));
+
+  const columnCursor = new Map<number, number>();
+  const panelCounts = new Map<string, number>();
+
+  return outerRoots
+    .map((root, idx) => {
+      const kind = detectGaiaComponentKind(root);
+      if (!kind || !isGaiaComponentKind(kind)) return null;
+      const def = getGaiaComponent(kind);
+      panelCounts.set(kind, (panelCounts.get(kind) || 0) + 1);
+
+      const columnEl = root.closest('[id^="column_"]');
+      const columnAttr = columnEl ? (columnEl.getAttribute('id') || '').replace('column_', '') : '';
+      const parsedColumn = Number(columnAttr);
+      const column: 1 | 2 | 3 = parsedColumn === 2 ? 2 : parsedColumn === 3 ? 3 : def.defaultColumn;
+
+      const h2 = root.querySelector('h2');
+      const title = (h2?.textContent || '').trim() || def.defaultTitle;
+
+      // Body HTML = component markup minus the heading (the editor re-emits the h2).
+      const clone = root.cloneNode(true) as HTMLElement;
+      clone.querySelector('h2')?.remove();
+      const bodyHtml = clone.innerHTML.trim();
+
+      const element = createGaiaPanelElement(kind, column, idx, {
+        width: 1380,
+        height: 720,
+        backgroundColor: '#0e111a',
+        gridSnap: true,
+        gridSize: 10,
+        showGrid: false,
+        profileTitle: 'Imported',
+        forumTheme: 'dark-cyber',
+      } as CanvasSettings);
+
+      const y = 24 + (columnCursor.get(column) || 0) * 24;
+      columnCursor.set(column, (columnCursor.get(column) || 0) + 1);
+
+      const inlineStyle = root.getAttribute('style') || '';
+
+      return {
+        ...element,
+        id: `imported_gaia_${kind}_${idx}`,
+        name: `${def.label} (${def.panelClass.split(' ')[0]})`,
+        content: title,
+        x: xForColumn(
+          { width: 1380 } as CanvasSettings,
+          column,
+          element.width
+        ),
+        y,
+        width: parsePx(inlineStyle.match(/width\s*:\s*([^;]+)/)?.[1], element.width),
+        height: Math.max(160, parsePx(inlineStyle.match(/height\s*:\s*([^;]+)/)?.[1], element.height)),
+        gaia: {
+          kind,
+          column,
+          title,
+          panelId: root.getAttribute('id') || def.panelId || undefined,
+          extraClass: undefined,
+          bodyHtml,
+        },
+      } as ProfileElement;
+    })
+    .filter((el): el is ProfileElement => !!el);
 }
 
 function buildElementFromSpan(
@@ -764,7 +1105,7 @@ function parseClipPolygon(clip?: string): { x: number; y: number }[] | null {
   return points.length >= 3 ? points : null;
 }
 
-/** Top-level: fetch URL, sanitize, parse, and reconstruct. */
+/** Top-level: fetch URL, sanitize, parse, scrape styles/background, reconstruct. */
 export async function importProfileFromUrl(
   url: string,
   onProgress?: (msg: string) => void
@@ -787,24 +1128,82 @@ export async function importProfileFromUrl(
   injectBbIds(doc);
 
   onProgress?.('Extracting stylesheets…');
-  const rawCss = await extractCss(doc, url);
+  const { css: importedCss, stylesheets } = await extractCss(doc, url, onProgress);
+
+  // The profile background is usually CSS (body/html rule) rather than an <img>.
+  const background = detectProfileBackground(doc, importedCss, url);
+  onProgress?.(
+    background.detected
+      ? `Background found (${background.source})`
+      : 'No CSS background found — checking components…'
+  );
+  const rawCss = augmentCssWithBackground(importedCss, background);
 
   // Small settle delay — some pages benefit from a moment of yield before extraction
   await sleep(150);
 
+  onProgress?.('Scraping Gaia V2 components…');
+  const components = scrapeGaiaComponents(doc);
+  onProgress?.(
+    components.length
+      ? `Components: ${components.map((c) => `${c.label}×${c.count}`).join(', ')}`
+      : 'No dedicated components detected'
+  );
+
   onProgress?.('Reconstructing elements…');
   const { elements, settings } = reconstructElements(doc, rawCss);
 
-  onProgress?.(`Done — ${elements.length} elements, ${scriptsRemoved} scripts removed`);
+  const mergedSettings: Partial<CanvasSettings> = {
+    ...settings,
+    ...backgroundToSettings(background),
+  };
+
+  const warnings: string[] = [];
+  const failed = stylesheets.filter((s) => !s.ok);
+  if (failed.length) {
+    warnings.push(
+      `${failed.length} stylesheet(s) could not be fetched (CORS/login) — panels may fall back to Gaia defaults: ${failed
+        .map((s) => s.url)
+        .join(', ')}`
+    );
+  }
+  if (!background.detected) {
+    warnings.push('No background style found in the document — the profile may use an image element instead.');
+  }
+  if (components.length === 0) {
+    warnings.push('No Gaia V2 panels detected inside #columns.');
+  }
+
+  onProgress?.(`Done — ${elements.length} elements, ${components.length} components, ${scriptsRemoved} scripts removed`);
 
   return {
     elements,
-    settings,
+    settings: mergedSettings,
     rawHtml: serializeDoc(doc, rawCss),
     rawCss,
     scriptsRemoved,
     sourceUrl: url,
+    diagnostics: {
+      stylesheetsFound: stylesheets.length,
+      stylesheetsFetched: stylesheets.filter((s) => s.ok).length,
+      stylesheetUrls: stylesheets,
+      background,
+      components,
+      warnings,
+    },
   };
+}
+
+function backgroundToSettings(background: DetectedBackground): Partial<CanvasSettings> {
+  if (!background.detected) return {};
+  const out: Partial<CanvasSettings> = {};
+  if (background.color) out.backgroundColor = background.color;
+  if (background.image) out.backgroundImage = background.image;
+  if (background.repeat) out.backgroundRepeat = background.repeat;
+  if (background.size) out.backgroundSize = background.size;
+  if (background.position) out.backgroundPosition = background.position;
+  if (background.attachment) out.backgroundAttachment = background.attachment;
+  return out;
 }
 
 /** Rewrite `src` / `href` to absolute URLs so images/links resolve when rendered */
@@ -816,6 +1215,7 @@ function rewriteRelativeUrls(doc: Document, baseUrl: string): void {
     ['source', 'src'],
     ['video', 'src'],
     ['audio', 'src'],
+    ['link', 'href'],
   ];
   attrPairs.forEach(([tag, attr]) => {
     doc.querySelectorAll(tag).forEach((el) => {
@@ -834,8 +1234,9 @@ function rewriteRelativeUrls(doc: Document, baseUrl: string): void {
     if (!style) return;
     el.setAttribute('style', rewriteCssUrls(style, baseUrl));
   });
-  // Ensure a <base> tag exists so any remaining relative refs resolve on render
-  if (!doc.querySelector('base') && doc.head) {
+  // Ensure a single <base> tag exists so any remaining relative refs resolve.
+  doc.querySelectorAll('base').forEach((existing) => existing.remove());
+  if (doc.head) {
     const base = doc.createElement('base');
     base.href = baseUrl;
     doc.head.insertBefore(base, doc.head.firstChild);
@@ -886,12 +1287,17 @@ export function injectBbIds(doc: Document): void {
 }
 
 /**
- * Import from a raw HTML string pasted by the user.
- * No network fetch is performed, so external stylesheets referenced by
- * <link rel="stylesheet"> are skipped — inline <style> blocks are still parsed.
- * Users can prepend their own <style>...</style> if the source page uses external CSS.
+ * Import from a raw HTML string pasted by the user (view-source → paste).
+ *
+ * When a source URL is supplied we also try to fetch the `<link rel="stylesheet">`
+ * documents listed in <head> through the CORS proxy chain — that is where Gaia
+ * keeps the real profile styling and the `body { background: url(...) }` rule.
  */
-export function importProfileFromHtml(rawInput: string, sourceUrl?: string): ImportResult {
+export async function importProfileFromHtml(
+  rawInput: string,
+  sourceUrl?: string,
+  onProgress?: (msg: string) => void
+): Promise<ImportResult> {
   const { clean, scriptsRemoved } = sanitizeHtml(rawInput);
 
   // Wrap fragments in <html><body> so DOMParser handles snippets gracefully.
@@ -913,23 +1319,65 @@ export function importProfileFromHtml(rawInput: string, sourceUrl?: string): Imp
     }
   }
 
+  // Stamp nodes BEFORE fetching linked CSS (fetch does not mutate the DOM).
   injectBbIds(doc);
 
-  // Only inline styles are accessible when pasting; skip external <link> stylesheets.
+  const base = sourceUrl || '';
   const cssBlocks: string[] = [];
-  doc.querySelectorAll('style').forEach((s) => {
-    if (s.textContent) cssBlocks.push(sourceUrl ? rewriteCssUrls(s.textContent, sourceUrl) : s.textContent);
-  });
-  const rawCss = withGaiaPanelBaseCss(doc, cssBlocks.join('\n\n'));
+  const stylesheets: Array<{ url: string; ok: boolean }> = [];
 
+  if (base) {
+    onProgress?.('Resolving <head> stylesheets…');
+    const linked = await extractCss(doc, base, onProgress);
+    cssBlocks.push(linked.css);
+    stylesheets.push(...linked.stylesheets);
+  } else {
+    doc.querySelectorAll('style').forEach((s) => {
+      if (s.textContent) cssBlocks.push(s.textContent);
+    });
+  }
+
+  const importedCss = withGaiaPanelBaseCss(doc, cssBlocks.join('\n\n'));
+  const backgroundBase = base || (typeof window !== 'undefined' ? window.location.href : 'https://www.gaiaonline.com/');
+  const background = detectProfileBackground(doc, importedCss, backgroundBase);
+  onProgress?.(
+    background.detected ? `Background found (${background.source})` : 'No CSS background found.'
+  );
+  const rawCss = augmentCssWithBackground(importedCss, background);
+
+  onProgress?.('Scraping Gaia V2 components…');
+  const components = scrapeGaiaComponents(doc);
+
+  onProgress?.('Reconstructing elements…');
   const { elements, settings } = reconstructElements(doc, rawCss);
+
+  const warnings: string[] = [];
+  if (!base) {
+    warnings.push(
+      'No source URL supplied — linked stylesheets could not be fetched. Add the profile URL to improve fidelity.'
+    );
+  } else {
+    const failed = stylesheets.filter((s) => !s.ok);
+    if (failed.length) {
+      warnings.push(`${failed.length} stylesheet(s) blocked by CORS — Gaia defaults will be used for those panels.`);
+    }
+  }
+  if (!background.detected) warnings.push('No background style detected in the pasted markup.');
 
   return {
     elements,
-    settings,
+    settings: { ...settings, ...backgroundToSettings(background) },
     rawHtml: serializeDoc(doc, rawCss),
     rawCss,
     scriptsRemoved,
     sourceUrl: sourceUrl || '(pasted HTML)',
+    diagnostics: {
+      stylesheetsFound: stylesheets.length,
+      stylesheetsFetched: stylesheets.filter((s) => s.ok).length,
+      stylesheetUrls: stylesheets,
+      background,
+      components,
+      warnings,
+    },
   };
 }
