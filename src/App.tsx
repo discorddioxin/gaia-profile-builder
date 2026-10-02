@@ -605,6 +605,28 @@ export const App: React.FC = () => {
     []
   );
 
+  /**
+   * Stable imported-canvas callbacks. Inline lambdas here changed identity on
+   * every App render, which re-ran the canvas' listener effects (and its DOM
+   * observers) constantly.
+   */
+  const handleImportedCommit = useCallback(
+    (newHtml: string) => {
+      updateActiveProfile((p) => ({ ...p, rawHtml: newHtml }));
+    },
+    [updateActiveProfile]
+  );
+
+  const handleImportedSelectNode = useCallback(
+    (info: ImportedNodeInfo | null) => {
+      setImportedNode(info);
+      setImportedInspectedBbId(null);
+      setImportedInspectedNode(null);
+      if (info) focusSelectedElementPane();
+    },
+    [focusSelectedElementPane]
+  );
+
   const handleSwitchRenderMode = useCallback(
     (mode: 'canvas' | 'raw') => {
       updateActiveProfile((p) => ({ ...p, renderMode: mode }));
@@ -613,6 +635,11 @@ export const App: React.FC = () => {
       setImportedInspectedNode(null);
     },
     [updateActiveProfile]
+  );
+
+  const handleImportedSwitchToRaw = useCallback(
+    () => handleSwitchRenderMode('raw'),
+    [handleSwitchRenderMode]
   );
 
   // Clear imported selection when switching to a non-imported tab or when
@@ -756,20 +783,11 @@ export const App: React.FC = () => {
                 draftSize={draftImportedSize}
                 inspectedBbId={importedInspectedBbId}
                 onUpdateSettings={handleUpdateSettings}
-                onCommit={(newHtml) => {
-                  updateActiveProfile((p) => ({ ...p, rawHtml: newHtml }));
-                }}
-                onSelectNode={(info) => {
-                  setImportedNode(info);
-                  setImportedInspectedBbId(null);
-                  setImportedInspectedNode(null);
-                  if (info) {
-                    focusSelectedElementPane();
-                  }
-                }}
+                onCommit={handleImportedCommit}
+                onSelectNode={handleImportedSelectNode}
                 onMultiSelectChange={setImportedMultiSelectCount}
                 onTreeChange={setImportedTree}
-                onSwitchToRaw={() => handleSwitchRenderMode('raw')}
+                onSwitchToRaw={handleImportedSwitchToRaw}
               />
             )}
             {!activeProfile.isImported && (

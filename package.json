@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "predev": "node scripts/ensure-deps.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },

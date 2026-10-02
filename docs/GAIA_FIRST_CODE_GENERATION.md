@@ -107,3 +107,33 @@ The Code dialog has separate tabs:
 - **Full Document** (imports only) — the untouched raw imported HTML.
 
 Each tab has its own Copy and Download action.
+
+## 6. Dev server & editor performance
+
+### Preview resilience
+`node_modules/` is not part of the repository snapshot, so a sandbox restart used
+to leave `npm run dev` exiting immediately with `vite: not found` — which closed
+the live preview. `npm run dev` now runs `scripts/ensure-deps.mjs` first, which
+reinstalls dependencies only when they are missing or incomplete.
+
+### Resource fixes (imported canvas)
+The editable imported canvas used to re-render the whole app every animation
+frame while a node was selected:
+
+- `recomputeSelectionRect()` allocated a new rect object per frame, so React
+  could never bail out of the update. Rects are now compared before being
+  committed (`sameRect` / `sameMultiRects`), so idle frames produce no renders
+  while a CSS-animated panel still keeps its outline in sync. Verified: 0 renders
+  over 120 idle frames (previously ~120), and the outline still updates per frame
+  for a genuinely moving element.
+- The polling loop pauses while the document is actually hidden.
+- `emitTree()` is fingerprinted (`treeSignature`) so ResizeObserver bursts no
+  longer re-set the hierarchy tree into the parent on every layout tick.
+- Layout resync listeners (linked stylesheets, images, `ResizeObserver`) are now
+  attached in a dedicated effect with full teardown, instead of being added
+  inside the shadow rebuild where a rebuild could leave them attached.
+- Deferred resync timers are tracked, debounced in steady state, and cleared on
+  unmount, so nothing fires after the canvas goes away.
+- `App` passes stable `onCommit` / `onSelectNode` / `onSwitchToRaw` callbacks:
+  inline lambdas changed identity every render and re-ran the canvas' listener
+  effects (and its DOM observers) constantly.

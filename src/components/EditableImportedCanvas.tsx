@@ -318,6 +318,44 @@ function isRootSurfaceSelector(selector: string): boolean {
  * not an <img>), so those declarations are aliased onto `:host` and the
  * shadow body. Export/serialization is untouched.
  */
+type Rect = { left: number; top: number; width: number; height: number };
+type MultiRect = Rect & { bbId: string };
+
+/**
+ * Overlay rects are recomputed every frame while something is selected (so
+ * CSS-animated panels keep their outline in sync). Without change detection
+ * every frame would allocate a new object and force a full app re-render at
+ * 60fps, which pegs the CPU for as long as a node stays selected.
+ */
+function sameRect(a: Rect | null, b: Rect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+}
+
+/**
+ * Cheap fingerprint of the emitted hierarchy tree. The ResizeObserver fires in
+ * bursts while imported CSS/images resolve, and rebuilding + re-setting the
+ * whole tree each time churns the properties panel for no visible change.
+ */
+function treeSignature(nodes: ImportedTreeNode[]): string {
+  let signature = '';
+  const walk = (list: ImportedTreeNode[], depth: number) => {
+    list.forEach((node) => {
+      signature += `${depth}:${node.bbId}:${node.tag}:${node.semanticRole}:${node.text.length}|`;
+      walk(node.children, depth + 1);
+    });
+  };
+  walk(nodes, 0);
+  return signature;
+}
+
+function sameMultiRects(a: MultiRect[], b: MultiRect[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((rect, i) => rect.bbId === b[i].bbId && sameRect(rect, b[i]));
+}
+
 function adaptImportedCssForShadow(css: string): string {
   return css.replace(/(^|})\s*([^{}@]+)\{([^{}]*)\}/g, (match, brace, selectorText, body) => {
     const selectors = String(selectorText)
@@ -371,6 +409,10 @@ export const EditableImportedCanvas = forwardRef<
   const lastCommittedHtml = useRef<string>('');
   const overlayContainerRef = useRef<HTMLDivElement>(null);
   const suppressNextClickRef = useRef(false);
+  const lastTreeSignature = useRef<string>('');
+  const isMountedRef = useRef(true);
+  const resyncTimersRef = useRef<number[]>([]);
+  const debounceTimerRef = useRef<number | null>(null);
 
   const [selectedBbId, setSelectedBbId] = useState<string | null>(null);
   // Extra bbIds added by Shift+Click. Primary selection stays in selectedBbId.
@@ -1084,6 +1126,11 @@ export const EditableImportedCanvas = forwardRef<
         !(el.tagName === 'STYLE')
       )
       .map((el) => buildTreeFromElement(el as HTMLElement, 0));
+    // The ResizeObserver can fire in bursts (linked CSS landing, image decode,
+    // CSS animations). Skip the parent update when the tree is unchanged.
+    const signature = treeSignature(roots);
+    if (signature === lastTreeSignature.current) return;
+    lastTreeSignature.current = signature;
     onTreeChange(roots);
   }, [onTreeChange]);
 
@@ -1109,39 +1156,34 @@ export const EditableImportedCanvas = forwardRef<
 
     const overlayRect = (overlay || host).getBoundingClientRect();
 
-    if (!selectedBbId) {
-      setSelectionRect(null);
-    } else {
+    const nextSelectionRect: Rect | null = (() => {
+      if (!selectedBbId) return null;
       const el = findElementByBbId(selectedBbId);
-      if (!el) {
-        setSelectionRect(null);
-      } else {
-        const rect = el.getBoundingClientRect();
-        setSelectionRect({
-          left: rect.left - overlayRect.left,
-          top: rect.top - overlayRect.top,
-          width: rect.width,
-          height: rect.height,
-        });
-      }
-    }
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        left: rect.left - overlayRect.left,
+        top: rect.top - overlayRect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    })();
+    // Bail out when nothing moved — prevents a re-render per animation frame.
+    setSelectionRect((prev) => (sameRect(prev, nextSelectionRect) ? prev : nextSelectionRect));
 
-    if (!inspectedBbId || inspectedBbId === selectedBbId) {
-      setInspectRect(null);
-    } else {
+    const nextInspectRect: Rect | null = (() => {
+      if (!inspectedBbId || inspectedBbId === selectedBbId) return null;
       const inspectedEl = findElementByBbId(inspectedBbId);
-      if (!inspectedEl) {
-        setInspectRect(null);
-      } else {
-        const rect = inspectedEl.getBoundingClientRect();
-        setInspectRect({
-          left: rect.left - overlayRect.left,
-          top: rect.top - overlayRect.top,
-          width: rect.width,
-          height: rect.height,
-        });
-      }
-    }
+      if (!inspectedEl) return null;
+      const rect = inspectedEl.getBoundingClientRect();
+      return {
+        left: rect.left - overlayRect.left,
+        top: rect.top - overlayRect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    })();
+    setInspectRect((prev) => (sameRect(prev, nextInspectRect) ? prev : nextInspectRect));
 
     const rects = Array.from(selectedBbIds)
       .filter((bbId) => bbId !== selectedBbId)
@@ -1157,8 +1199,8 @@ export const EditableImportedCanvas = forwardRef<
           height: rect.height,
         };
       })
-      .filter(Boolean) as Array<{ bbId: string; left: number; top: number; width: number; height: number }>;
-    setMultiSelectionRects(rects);
+      .filter(Boolean) as MultiRect[];
+    setMultiSelectionRects((prev) => (sameMultiRects(prev, rects) ? prev : rects));
   }, [selectedBbId, selectedBbIds, inspectedBbId, findElementByBbId]);
 
   const parseCssPixels = (value: string): number => {
@@ -1212,7 +1254,8 @@ export const EditableImportedCanvas = forwardRef<
       const rect = (col as HTMLElement).getBoundingClientRect();
       maxBottom = Math.max(maxBottom, rect.bottom - bodyRect.top);
     });
-    setContentBottomHeight(Math.max(1, Math.ceil(maxBottom)));
+    const nextHeight = Math.max(1, Math.ceil(maxBottom));
+    setContentBottomHeight((prev) => (prev === nextHeight ? prev : nextHeight));
   }, []);
 
   const refreshAfterMutation = (bbId?: string) => {
@@ -1357,7 +1400,75 @@ export const EditableImportedCanvas = forwardRef<
     }
   }, [onCommit, emitTree]);
 
+  /**
+   * Request a layout resync (tree + content height + selection rects) after the
+   * browser has had a chance to reflow. Timers are tracked so they cannot fire
+   * after unmount or after the canvas was rebuilt for another profile.
+   */
+  const scheduleAssetResync = useCallback(
+    (prevScroll?: { x: number; y: number }) => {
+      const run = () => {
+        requestAnimationFrame(() => {
+          if (!isMountedRef.current) return;
+          const host = hostRef.current;
+          if (host && prevScroll) {
+            host.scrollLeft = prevScroll.x;
+            host.scrollTop = prevScroll.y;
+          }
+          emitTree();
+          measureContentBottom();
+          recomputeSelectionRect();
+        });
+      };
+
+      const clearScheduled = () => {
+        resyncTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+        resyncTimersRef.current = [];
+        debounceTimerRef.current = null;
+      };
+
+      if (prevScroll) {
+        // After a (re)build: restore scroll now, then re-measure as linked CSS,
+        // images and webfonts settle. Any stale timer from the previous build is
+        // dropped so timers cannot accumulate.
+        clearScheduled();
+        run();
+        [150, 600, 1200].forEach((delay) => {
+          const id = window.setTimeout(() => {
+            resyncTimersRef.current = resyncTimersRef.current.filter((t) => t !== id);
+            run();
+          }, delay);
+          resyncTimersRef.current.push(id);
+        });
+        return;
+      }
+
+      // Steady state (ResizeObserver bursts / asset events): collapse to one
+      // deferred pass instead of one per event.
+      if (debounceTimerRef.current !== null) return;
+      debounceTimerRef.current = window.setTimeout(() => {
+        debounceTimerRef.current = null;
+        run();
+      }, 80);
+    },
+    [emitTree, measureContentBottom, recomputeSelectionRect]
+  );
+
   // ---- Shadow DOM lifecycle -----------------------------------------------
+
+  // Track mount state + release deferred resync timers when the canvas goes away.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      resyncTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      resyncTimersRef.current = [];
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -1442,47 +1553,58 @@ export const EditableImportedCanvas = forwardRef<
     ensureBbIds(bodyShell);
 
     lastCommittedHtml.current = rawHtml;
+    lastTreeSignature.current = '';
+    scheduleAssetResync(prevScroll);
+  }, [profile.rawHtml, profile.rawCss, scheduleAssetResync]);
 
-    const syncLayoutAfterAssets = () => {
-      requestAnimationFrame(() => {
-        if (hostRef.current) {
-          hostRef.current.scrollLeft = prevScroll.x;
-          hostRef.current.scrollTop = prevScroll.y;
-        }
-        emitTree();
-        measureContentBottom();
-        recomputeSelectionRect();
-      });
-    };
+  /**
+   * Re-measure after async assets settle (linked CSS, image decode, fonts) and
+   * on layout changes inside #columns. Complex imported profiles depend on all
+   * of them. Owns its listeners so a rebuild cannot leave them dangling, and
+   * clears its timers on unmount.
+   */
+  useEffect(() => {
+    const shadow = shadowRef.current;
+    if (!shadow) return;
+    const bodyShell = shadow.querySelector('body[data-bb-import-body]') as HTMLElement | null;
+    if (!bodyShell) return;
 
-    // Re-measure after linked CSS and images load; complex profiles depend on both.
+    const sync = () => scheduleAssetResync();
+    const stylesheetLinks = Array.from(shadow.querySelectorAll(`link[rel="stylesheet"]`));
     stylesheetLinks.forEach((link) => {
-      link.addEventListener('load', syncLayoutAfterAssets, { once: true });
-      link.addEventListener('error', syncLayoutAfterAssets, { once: true });
-    });
-    bodyShell.querySelectorAll('img').forEach((img) => {
-      img.addEventListener('load', syncLayoutAfterAssets, { once: true });
-      img.addEventListener('error', syncLayoutAfterAssets, { once: true });
+      link.addEventListener('load', sync);
+      link.addEventListener('error', sync);
     });
 
-    // Watch for layout changes inside #columns as CSS resolves.
-    const columnsObserver = new ResizeObserver(() => syncLayoutAfterAssets());
+    const images = Array.from(bodyShell.querySelectorAll('img'));
+    images.forEach((img) => {
+      img.addEventListener('load', sync);
+      img.addEventListener('error', sync);
+    });
+
+    const columnsObserver = new ResizeObserver(sync);
     const observedColumns = bodyShell.querySelector('#columns') as HTMLElement | null;
     if (observedColumns) {
       columnsObserver.observe(observedColumns);
-      observedColumns.querySelectorAll('.column').forEach((col) => columnsObserver.observe(col as Element));
+      observedColumns
+        .querySelectorAll('.column')
+        .forEach((col) => columnsObserver.observe(col as Element));
     }
 
-    // Restore immediately, then again after async assets settle.
-    syncLayoutAfterAssets();
-    window.setTimeout(syncLayoutAfterAssets, 150);
-    window.setTimeout(syncLayoutAfterAssets, 600);
-    window.setTimeout(syncLayoutAfterAssets, 1200);
+    sync();
 
     return () => {
+      stylesheetLinks.forEach((link) => {
+        link.removeEventListener('load', sync);
+        link.removeEventListener('error', sync);
+      });
+      images.forEach((img) => {
+        img.removeEventListener('load', sync);
+        img.removeEventListener('error', sync);
+      });
       columnsObserver.disconnect();
     };
-  }, [profile.rawHtml, profile.rawCss, recomputeSelectionRect, emitTree, measureContentBottom]);
+  }, [profile.rawHtml, profile.rawCss, scheduleAssetResync]);
 
   // ---- Event handlers on the shadow root ----------------------------------
 
@@ -1719,11 +1841,15 @@ export const EditableImportedCanvas = forwardRef<
   }, [recomputeSelectionRect]);
 
   // Poll for size changes on the selected element (handles style edits, animations, etc.)
+  // `recomputeSelectionRect` only commits state when a rect actually moved, and
+  // the loop parks itself while the tab is hidden.
   useEffect(() => {
     if (!selectedBbId) return;
     let raf = 0;
     const tick = () => {
-      recomputeSelectionRect();
+      // Pause while the tab is actually hidden; 'prerender' (and any other
+      // non-visible state that still reports layout) stays live.
+      if (document.visibilityState !== 'hidden') recomputeSelectionRect();
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
