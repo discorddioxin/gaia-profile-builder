@@ -240,8 +240,10 @@ const railButton = () =>
 const canvasCount = () =>
   window.document.querySelectorAll('[id^="el_"], [id^="gaia_"]').length;
 
-check('boots to the welcome screen', /Start a profile from scratch/.test(text()));
+check('Profile Tools is selected on startup', /Profile Tools|Make anything/i.test(text()));
 check('no profile is auto-created', !window.document.querySelector('[title="Close tab"]'));
+await click(buttonByText(/^Builder$/, true), 'Profile Builder section');
+check('Builder opens to the welcome screen', /Start a profile from scratch/.test(text()));
 
 await click(buttonByText(/New Profile/i), 'New Profile');
 check('New Profile creates a tab', !!window.document.querySelector('[title="Close tab"]'));

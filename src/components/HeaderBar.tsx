@@ -106,18 +106,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         {/* Section switcher: Profile Builder ⇄ Profile Tools */}
         <div className="flex items-center rounded-xl border border-slate-800 bg-slate-900 p-0.5 shadow-inner">
           <button
-            onClick={() => onChangeSection('builder')}
-            title="Profile Builder — canvas, components and export"
-            className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
-              appSection === 'builder'
-                ? 'bg-indigo-600 text-white shadow'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Layout className="w-3.5 h-3.5" />
-            <span className="hidden lg:inline">Builder</span>
-          </button>
-          <button
             onClick={() => onChangeSection('tools')}
             title="Profile Tools — isolated labs for masks, clips, morphs, 3D and surfaces"
             className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
@@ -128,6 +116,18 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           >
             <Wand2 className="w-3.5 h-3.5" />
             <span className="hidden lg:inline">Tools</span>
+          </button>
+          <button
+            onClick={() => onChangeSection('builder')}
+            title="Profile Builder — canvas, components and export"
+            className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
+              appSection === 'builder'
+                ? 'bg-indigo-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Layout className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Builder</span>
           </button>
         </div>
 

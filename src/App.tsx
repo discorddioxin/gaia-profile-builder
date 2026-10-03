@@ -118,7 +118,7 @@ export const App: React.FC = () => {
   // ============================================================
   const [viewMode, setViewMode] = useState<AppViewMode>('canvas');
   /** Top-level section — Profile Builder (editor) or Profile Tools (labs). */
-  const [appSection, setAppSection] = useState<AppSection>('builder');
+  const [appSection, setAppSection] = useState<AppSection>('tools');
 
   const [zoom, setZoom] = useState<number>(() => {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {

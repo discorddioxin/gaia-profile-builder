@@ -1,4 +1,6 @@
 import type { CanvasSettings, ProfileElement } from '../types/profile';
+import maleAvatarUrl from '../assets/gaia-avatar-male.svg';
+import femaleAvatarUrl from '../assets/gaia-avatar-female.svg';
 
 /**
  * Gaia V2 Profile Specification — single source of truth.
@@ -148,7 +150,7 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
     titleId: 'details_title',
     defaultTitle: 'Details',
     bodyHtml: `<input type="hidden" id="avatarnonce" value="">
-<p class="details_avatar_wrap"><img class="details_avatar" src="" alt="Avatar" width="120" height="150"></p>
+<p class="details_avatar_wrap"><img class="details_avatar" src="${maleAvatarUrl}" alt="Male avatar (default)" width="120" height="150"></p>
 <div class="forum_userstatus">
   <div class="statuslinks">
     <div class="pushBox" data-uid="">&nbsp;</div>
@@ -476,7 +478,7 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   </dt>
   <dd data-comment-id="" data-user-id="">
     <p class="deletecomment"><a href="#">Delete</a><br><a href="#">Comment Back</a></p>
-    <div class="dropBox"><img src="" class="avatarImage" width="48" height="48" alt=""></div>
+    <div class="dropBox"><img src="${femaleAvatarUrl}" class="avatarImage" width="48" height="48" alt="Female avatar (default)"></div>
     <div class="postcontent">Comment body</div>
   </dd>
 </dl>`,

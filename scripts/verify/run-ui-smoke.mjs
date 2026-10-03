@@ -32,6 +32,7 @@ const build = spawnSync(
     '--external:jsdom',
     '--alias:@=./src',
     '--loader:.css=empty',
+    '--loader:.svg=dataurl',
     `--outfile=${out}`,
     '--log-level=error',
   ],

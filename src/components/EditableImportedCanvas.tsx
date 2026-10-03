@@ -23,6 +23,8 @@ import {
 } from 'lucide-react';
 import { CanvasSettings, Profile } from '../types/profile';
 import { getAnimationKeyframes } from '../utils/bbcodeTranspiler';
+import maleAvatarUrl from '../assets/gaia-avatar-male.svg';
+import femaleAvatarUrl from '../assets/gaia-avatar-female.svg';
 
 /**
  * Public info about the currently selected imported node.
@@ -1000,7 +1002,7 @@ export const EditableImportedCanvas = forwardRef<
       wrapper.className = 'panel details_panel';
       wrapper.id = 'id_details';
       wrapper.setAttribute('data-bb-id', `bb-details-panel-${stamp}`);
-      wrapper.innerHTML = `<h2 id="details_title" class="2170553" data-bb-id="bb-details-title-${stamp}">Profile Details</h2><input type="hidden" id="avatarnonce" value="" data-bb-id="bb-details-nonce-${stamp}"><p data-bb-id="bb-details-avatar-wrap-${stamp}"><img src="" alt="Avatar" width="120" height="150" data-bb-id="bb-details-avatar-${stamp}"></p><div class="forum_userstatus" data-bb-id="bb-details-status-${stamp}"><div class="statuslinks" data-bb-id="bb-details-statuslinks-${stamp}"><div class="pushBox" data-uid="" data-bb-id="bb-details-pushbox-${stamp}">&nbsp;</div><span class="online" data-bb-id="bb-details-online-${stamp}">Online</span></div></div><p data-bb-id="bb-details-lastlogin-${stamp}"><strong data-bb-id="bb-details-lastlogin-label-${stamp}">Last Login:</strong> </p><p data-bb-id="bb-details-registered-${stamp}"><strong data-bb-id="bb-details-registered-label-${stamp}">Registered:</strong> </p>`;
+      wrapper.innerHTML = `<h2 id="details_title" class="2170553" data-bb-id="bb-details-title-${stamp}">Profile Details</h2><input type="hidden" id="avatarnonce" value="" data-bb-id="bb-details-nonce-${stamp}"><p data-bb-id="bb-details-avatar-wrap-${stamp}"><img src="${maleAvatarUrl}" alt="Male avatar (default)" width="120" height="150" data-bb-id="bb-details-avatar-${stamp}"></p><div class="forum_userstatus" data-bb-id="bb-details-status-${stamp}"><div class="statuslinks" data-bb-id="bb-details-statuslinks-${stamp}"><div class="pushBox" data-uid="" data-bb-id="bb-details-pushbox-${stamp}">&nbsp;</div><span class="online" data-bb-id="bb-details-online-${stamp}">Online</span></div></div><p data-bb-id="bb-details-lastlogin-${stamp}"><strong data-bb-id="bb-details-lastlogin-label-${stamp}">Last Login:</strong> </p><p data-bb-id="bb-details-registered-${stamp}"><strong data-bb-id="bb-details-registered-label-${stamp}">Registered:</strong> </p>`;
       return wrapper;
     }
 
@@ -1183,7 +1185,7 @@ export const EditableImportedCanvas = forwardRef<
     dd.setAttribute('data-comment-id', commentId);
     dd.setAttribute('data-user-id', userId);
     dd.setAttribute('data-bb-id', `bb-comment-dd-${stamp}`);
-    dd.innerHTML = `<p class="deletecomment" data-bb-id="bb-comment-actions-${stamp}"><a href="#" class="profile-delete-comment" data-bb-id="bb-comment-delete-${stamp}">Delete</a><br><a href="#" data-bb-id="bb-comment-back-${stamp}">Comment Back</a></p><div class="dropBox" data-bb-id="bb-comment-dropbox-${stamp}"><img src="" alt="" class="avatarImage" width="48" height="48" data-bb-id="bb-comment-avatar-${stamp}"></div><div class="postcontent" data-bb-id="bb-comment-content-${stamp}">New imported comment content.</div>`;
+    dd.innerHTML = `<p class="deletecomment" data-bb-id="bb-comment-actions-${stamp}"><a href="#" class="profile-delete-comment" data-bb-id="bb-comment-delete-${stamp}">Delete</a><br><a href="#" data-bb-id="bb-comment-back-${stamp}">Comment Back</a></p><div class="dropBox" data-bb-id="bb-comment-dropbox-${stamp}"><img src="${femaleAvatarUrl}" alt="Female avatar (default)" class="avatarImage" width="48" height="48" data-bb-id="bb-comment-avatar-${stamp}"></div><div class="postcontent" data-bb-id="bb-comment-content-${stamp}">New imported comment content.</div>`;
 
     return { dt, dd };
   };
