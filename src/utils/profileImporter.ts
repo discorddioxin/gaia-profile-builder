@@ -1,6 +1,17 @@
 import { ProfileElement, CanvasSettings } from '../types/profile';
 import { CLIP_PRESETS } from './presets';
 import {
+  BackgroundSnapshot,
+  ProbedBackground,
+  StylesheetRecord,
+  classifyStylesheet,
+  probeRenderedBackground,
+  resolveCssImports,
+  rewriteCssAssetUrls,
+  rewriteImportTargets,
+  snapshotDeclarations,
+} from './cssFidelity';
+import {
   GAIA_COMPONENT_ROOT_SELECTOR,
   createGaiaPanelElement,
   detectGaiaComponentKind,
@@ -18,6 +29,15 @@ export interface DetectedBackground {
   size?: string;
   position?: string;
   attachment?: string;
+  /** Full multi-layer `background-image` value (gradients included). */
+  imageLayers?: string;
+  /** Computed reproduction of the real page surface, per root element. */
+  computed?: {
+    html?: BackgroundSnapshot | null;
+    body?: BackgroundSnapshot | null;
+  };
+  /** True when the values came from the browser's own computed styles. */
+  verified?: boolean;
   /** Human readable origin, e.g. `body CSS rule (linked stylesheet)`. */
   source: string;
 }
@@ -25,7 +45,12 @@ export interface DetectedBackground {
 export interface ImportDiagnostics {
   stylesheetsFound: number;
   stylesheetsFetched: number;
-  stylesheetUrls: Array<{ url: string; ok: boolean }>;
+  /** Every sheet in the profile's CSS chain (links, imports, third-party libs). */
+  stylesheetUrls: StylesheetRecord[];
+  /** Bytes of CSS inlined into the document (links + @imports + <style>). */
+  cssBytesInlined: number;
+  /** `true` when the browser probe confirmed the rendered background. */
+  backgroundVerified: boolean;
   background: DetectedBackground;
   components: Array<{
     kind: string;
@@ -267,23 +292,74 @@ function safeAbsoluteUrl(value: string, baseUrl: string): string {
  */
 export function augmentCssWithBackground(css: string, background: DetectedBackground): string {
   if (!background.detected) return css;
-  const lines = [
+
+  const header = [
     '/* ------------------------------------------------------------------',
-    '   Profile surface detected by BBStudio import',
+    '   Profile surface reproduced by BBStudio import',
     `   Source: ${background.source}`,
-    '   Applied to html/body/#viewer so the background always renders.',
+    background.verified
+      ? '   Values: read from the browser after applying the profile CSS (1:1)'
+      : '   Values: parsed from the profile CSS',
+    '   Written at zero specificity so the profile CSS always wins.',
+    '   Applied to html/body so the surface renders in the editor too.',
     '   Safe to delete if your profile already paints its own surface.',
     '   ------------------------------------------------------------------ */',
-    'html, body, body#viewer {',
-    `  background-color: ${background.color || 'transparent'};`,
-    `  background-image: ${background.image ? `url('${background.image}')` : 'none'};`,
-    `  background-repeat: ${background.repeat || (background.image ? 'repeat' : 'no-repeat')};`,
-    `  background-size: ${background.size || (background.image ? 'auto' : 'auto')};`,
-    `  background-position: ${background.position || 'left top'};`,
-    `  background-attachment: ${background.attachment || 'scroll'};`,
-    '}',
   ];
-  return `${css}\n\n${lines.join('\n')}`;
+
+  const rules: string[] = [];
+  const html = background.computed?.html;
+  const body = background.computed?.body;
+
+  if (html && (html.image !== 'none' || !/^transparent$/i.test(html.color))) {
+    rules.push(`:where(html) {\n${snapshotDeclarations(html)}\n}`);
+  }
+  if (body && (body.image !== 'none' || !/^transparent$/i.test(body.color))) {
+    rules.push(`:where(body) {\n${snapshotDeclarations(body)}\n}`);
+  }
+
+  if (rules.length === 0) {
+    // Textual fallback (no browser probe available).
+    const declarations = [
+      `  background-color: ${background.color || 'transparent'};`,
+      background.imageLayers
+        ? `  background-image: ${background.imageLayers};`
+        : `  background-image: ${background.image ? `url('${background.image}')` : 'none'};`,
+      background.repeat ? `  background-repeat: ${background.repeat};` : '',
+      background.size ? `  background-size: ${background.size};` : '',
+      `  background-position: ${background.position || 'center top'};`,
+      `  background-attachment: ${background.attachment || 'scroll'};`,
+    ].filter(Boolean);
+    rules.push(`:where(html, body, body#viewer) {\n${declarations.join('\n')}\n}`);
+  }
+
+  return `${css}\n\n${header.join('\n')}\n${rules.join('\n\n')}`;
+}
+
+/** Merge the browser's computed surface into the textually detected background. */
+function mergeProbedBackground(
+  detected: DetectedBackground,
+  probed: ProbedBackground | null
+): DetectedBackground {
+  if (!probed || !probed.paints) return detected;
+
+  const primary = probed.body && probed.origin === 'body' ? probed.body : probed.html || probed.body;
+  const urlMatch = primary?.image?.match(/url\(\s*(['"]?)([^'")]+)\1\s*\)/i);
+  const firstUrl = urlMatch ? urlMatch[2].trim() : undefined;
+
+  return {
+    ...detected,
+    detected: true,
+    verified: true,
+    color: primary && !/^transparent$/i.test(primary.color) ? primary.color : detected.color,
+    image: firstUrl || detected.image,
+    imageLayers: primary && primary.image !== 'none' ? primary.image : detected.imageLayers,
+    repeat: primary?.repeat || detected.repeat,
+    size: primary?.size || detected.size,
+    position: primary?.position || detected.position,
+    attachment: primary?.attachment || detected.attachment,
+    computed: { html: probed.html, body: probed.body },
+    source: `${detected.detected ? detected.source : 'rendered surface'} (verified by browser: ${probed.origin})`,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -335,60 +411,137 @@ export async function extractCss(
   doc: Document,
   baseUrl: string,
   onProgress?: (msg: string) => void
-): Promise<{ css: string; stylesheets: Array<{ url: string; ok: boolean }> }> {
-  const cssBlocks: string[] = [];
-  const stylesheets: Array<{ url: string; ok: boolean }> = [];
+): Promise<{ css: string; stylesheets: StylesheetRecord[] }> {
+  const blocks: string[] = [];
+  const stylesheets: StylesheetRecord[] = [];
 
-  const collectStyledNodes = (container: ParentNode | null) => {
-    if (!container) return;
-    Array.from((container as Document).querySelectorAll('style')).forEach((styleEl) => {
-      if (styleEl.textContent) cssBlocks.push(rewriteCssUrls(styleEl.textContent, baseUrl));
-    });
+  /** Fetch a sheet the same way pages are fetched: direct, then CORS proxies. */
+  const fetchCss = async (url: string): Promise<string> => {
+    const text = await fetchProfileHtml(url, undefined);
+    if (!text.trim()) throw new Error('empty stylesheet');
+    return text;
   };
 
+  const inlineLinkedSheet = async (el: HTMLLinkElement) => {
+    const href = el.getAttribute('href');
+    if (!href) return;
+    let absolute = href;
+    try {
+      absolute = new URL(href, baseUrl).toString();
+    } catch {
+      /* keep as written */
+    }
+    const meta = classifyStylesheet(absolute);
+    const label = meta.label ? ` (${meta.label})` : '';
+    try {
+      const raw = await fetchCss(absolute);
+      // Resolve nested @imports in place so the sheet is standalone.
+      const resolved = await resolveCssImports(raw, absolute, fetchCss, {
+        depth: 3,
+        onProgress,
+      });
+      const withUrls = rewriteCssAssetUrls(resolved.css, absolute);
+      blocks.push(`/* ------------------------------------------------------------------\n   From <link rel="stylesheet" href="${absolute}">${label}\n   ------------------------------------------------------------------ */\n${withUrls}`);
+      stylesheets.push({
+        url: absolute,
+        ok: true,
+        from: 'link',
+        kind: meta.kind,
+        label: meta.label,
+        bytes: raw.length,
+      });
+      stylesheets.push(...resolved.imports);
+      onProgress?.(
+        `Linked stylesheet inlined${label} (${(raw.length / 1024).toFixed(1)}KB): ${absolute}`
+      );
+    } catch {
+      stylesheets.push({
+        url: absolute,
+        ok: false,
+        from: 'link',
+        kind: meta.kind,
+        label: meta.label,
+      });
+      onProgress?.(`Stylesheet blocked${label}: ${absolute}`);
+    }
+  };
+
+  /**
+   * Inline a <style> block, resolving any `@import` inside it.
+   *
+   * Chrome ignores `@import` inside a shadow root stylesheet, and the sandboxed
+   * preview iframe may not be allowed to load the linked sheet either — so the
+   * imported text is spliced in place. Cascade order is preserved because
+   * `@import` is only valid at the top of a stylesheet (nested rules keep their
+   * position inside enclosing `@media`/`@supports` blocks).
+   */
+  const pushStyleNode = async (el: HTMLStyleElement | Element, source: string) => {
+    const text = el.textContent;
+    if (!text || !text.trim()) return;
+    if (!/^\s*@import\b/m.test(text)) {
+      blocks.push(
+        `/* From ${source} */\n${rewriteImportTargets(rewriteCssAssetUrls(text, baseUrl), baseUrl)}`
+      );
+      return;
+    }
+    const resolved = await resolveCssImports(text, baseUrl, fetchCss, {
+      depth: 3,
+      onProgress,
+    });
+    const withUrls = rewriteImportTargets(rewriteCssAssetUrls(resolved.css, baseUrl), baseUrl);
+    blocks.push(`/* From ${source} */\n${withUrls}`);
+    if (resolved.imports.length) {
+      stylesheets.push(...resolved.imports);
+      onProgress?.(
+        `Resolved ${resolved.imports.length} @import(s) from ${source}: ${resolved.imports
+          .map((i) => `${i.url}${i.ok ? '' : ' (blocked)'}`)
+          .join(', ')}`
+      );
+    }
+  };
+
+  // <head> in document order — link → style → inline, exactly as authored.
   const headNodes = Array.from(doc.head?.childNodes || []);
   for (const node of headNodes) {
     if (node.nodeType !== Node.ELEMENT_NODE) continue;
     const el = node as HTMLElement;
-
     if (el.tagName === 'STYLE') {
-      if (el.textContent) cssBlocks.push(rewriteCssUrls(el.textContent, baseUrl));
+      await pushStyleNode(el, '<style> in <head>');
       continue;
     }
-
     if (el.tagName === 'LINK' && (el as HTMLLinkElement).rel === 'stylesheet') {
-      const href = (el as HTMLLinkElement).getAttribute('href');
-      if (!href) continue;
-      try {
-        const absolute = new URL(href, baseUrl).toString();
-        const css = await fetchProfileHtml(absolute);
-        cssBlocks.push(`/* From ${absolute} */\n${rewriteCssUrls(css, absolute)}`);
-        stylesheets.push({ url: absolute, ok: true });
-        onProgress?.(`Stylesheet loaded (${(css.length / 1024).toFixed(1)}KB): ${absolute}`);
-        // Keep the <link> in the document so the editable canvas can load it too.
-      } catch {
-        stylesheets.push({ url: new URL(href, baseUrl).toString(), ok: false });
-        onProgress?.(`Stylesheet blocked: ${href}`);
-      }
+      await inlineLinkedSheet(el as HTMLLinkElement);
     }
   }
 
   // Some profiles keep <style> blocks in the body (inside #columns or panels).
-  collectStyledNodes(doc.body);
+  for (const styleEl of Array.from(doc.body?.querySelectorAll('style') || [])) {
+    await pushStyleNode(styleEl, '<style> in <body>');
+  }
 
-  return { css: withGaiaPanelBaseCss(doc, cssBlocks.join('\n\n')), stylesheets };
+  const css = withGaiaPanelBaseCss(doc, blocks.join('\n\n'));
+
+  // Surface third-party libraries in the report even when they could not be
+  // fetched (the browser will still try the original <link> at render time).
+  const libraries = new Map<string, number>();
+  stylesheets.forEach((sheet) => {
+    if (!sheet.label) return;
+    libraries.set(sheet.label, (libraries.get(sheet.label) || 0) + 1);
+  });
+  if (libraries.size) {
+    onProgress?.(
+      `CSS libraries detected: ${Array.from(libraries.entries())
+        .map(([name, count]) => `${name}×${count}`)
+        .join(', ')}`
+    );
+  }
+
+  return { css, stylesheets };
 }
 
+/** Absolutize CSS asset URLs (delegates to the fidelity module). */
 function rewriteCssUrls(css: string, baseUrl: string): string {
-  return css.replace(/url\(\s*(['"]?)(?!data:|https?:|\/\/|#)([^'"\)]+)\1\s*\)/gi, (_m, quote, rawUrl) => {
-    try {
-      const absolute = new URL(String(rawUrl).trim(), baseUrl).toString();
-      const q = quote || '"';
-      return `url(${q}${absolute}${q})`;
-    } catch {
-      return `url(${quote || ''}${rawUrl}${quote || ''})`;
-    }
-  });
+  return rewriteCssAssetUrls(css, baseUrl);
 }
 
 function withGaiaPanelBaseCss(doc: Document, css: string): string {
@@ -1131,12 +1284,24 @@ export async function importProfileFromUrl(
   const { css: importedCss, stylesheets } = await extractCss(doc, url, onProgress);
 
   // The profile background is usually CSS (body/html rule) rather than an <img>.
-  const background = detectProfileBackground(doc, importedCss, url);
+  let background = detectProfileBackground(doc, importedCss, url);
   onProgress?.(
     background.detected
       ? `Background found (${background.source})`
       : 'No CSS background found — checking components…'
   );
+
+  // Render the imported document once in a hidden frame and read the computed
+  // surface, so the recorded background is exactly what the profile shows.
+  onProgress?.('Verifying rendered background…');
+  const probed = await probeRenderedBackground(serializeDoc(doc, importedCss), {
+    timeoutMs: 9000,
+  });
+  background = mergeProbedBackground(background, probed);
+  if (probed?.paints) {
+    onProgress?.(`Background verified from rendered page (${probed.origin})`);
+  }
+
   const rawCss = augmentCssWithBackground(importedCss, background);
 
   // Small settle delay — some pages benefit from a moment of yield before extraction
@@ -1162,13 +1327,17 @@ export async function importProfileFromUrl(
   const failed = stylesheets.filter((s) => !s.ok);
   if (failed.length) {
     warnings.push(
-      `${failed.length} stylesheet(s) could not be fetched (CORS/login) — panels may fall back to Gaia defaults: ${failed
-        .map((s) => s.url)
+      `${failed.length} stylesheet(s) could not be fetched (CORS/login) — the browser will still request the original <link> at render time: ${failed
+        .map((s) => `${s.url}${s.label ? ` [${s.label}]` : ''}`)
         .join(', ')}`
     );
   }
   if (!background.detected) {
     warnings.push('No background style found in the document — the profile may use an image element instead.');
+  } else if (!background.verified) {
+    warnings.push(
+      'The rendered-background check could not run in this browser — the background falls back to the parsed CSS values.'
+    );
   }
   if (components.length === 0) {
     warnings.push('No Gaia V2 panels detected inside #columns.');
@@ -1187,6 +1356,8 @@ export async function importProfileFromUrl(
       stylesheetsFound: stylesheets.length,
       stylesheetsFetched: stylesheets.filter((s) => s.ok).length,
       stylesheetUrls: stylesheets,
+      cssBytesInlined: rawCss.length,
+      backgroundVerified: !!background.verified,
       background,
       components,
       warnings,
@@ -1199,6 +1370,9 @@ function backgroundToSettings(background: DetectedBackground): Partial<CanvasSet
   const out: Partial<CanvasSettings> = {};
   if (background.color) out.backgroundColor = background.color;
   if (background.image) out.backgroundImage = background.image;
+  // Exact multi-layer value (gradients + multiple urls), used by the editor and
+  // the exporter so the surface rule matches the imported profile byte for byte.
+  if (background.imageLayers) out.backgroundImageLayers = background.imageLayers;
   if (background.repeat) out.backgroundRepeat = background.repeat;
   if (background.size) out.backgroundSize = background.size;
   if (background.position) out.backgroundPosition = background.position;
@@ -1323,26 +1497,46 @@ export async function importProfileFromHtml(
   injectBbIds(doc);
 
   const base = sourceUrl || '';
-  const cssBlocks: string[] = [];
-  const stylesheets: Array<{ url: string; ok: boolean }> = [];
+  const stylesheets: StylesheetRecord[] = [];
+  let importedCss = '';
 
   if (base) {
-    onProgress?.('Resolving <head> stylesheets…');
+    onProgress?.('Resolving the profile CSS chain (links, @imports, libraries)…');
     const linked = await extractCss(doc, base, onProgress);
-    cssBlocks.push(linked.css);
+    importedCss = linked.css;
     stylesheets.push(...linked.stylesheets);
   } else {
-    doc.querySelectorAll('style').forEach((s) => {
-      if (s.textContent) cssBlocks.push(s.textContent);
+    // No source URL: <link> and @import targets cannot be resolved, but the
+    // <style> blocks the user pasted are still used verbatim.
+    const blocks: string[] = [];
+    doc.querySelectorAll('style').forEach((styleEl) => {
+      if (styleEl.textContent?.trim()) blocks.push(styleEl.textContent);
     });
+    importedCss = withGaiaPanelBaseCss(doc, blocks.join('\n\n'));
+    const linkCount = doc.querySelectorAll('link[rel="stylesheet"]').length;
+    if (linkCount) {
+      onProgress?.(
+        `${linkCount} linked stylesheet(s) cannot be resolved without the profile URL`
+      );
+    }
   }
 
-  const importedCss = withGaiaPanelBaseCss(doc, cssBlocks.join('\n\n'));
-  const backgroundBase = base || (typeof window !== 'undefined' ? window.location.href : 'https://www.gaiaonline.com/');
-  const background = detectProfileBackground(doc, importedCss, backgroundBase);
+  const backgroundBase =
+    base || (typeof window !== 'undefined' ? window.location.href : 'https://www.gaiaonline.com/');
+  let background = detectProfileBackground(doc, importedCss, backgroundBase);
   onProgress?.(
     background.detected ? `Background found (${background.source})` : 'No CSS background found.'
   );
+
+  onProgress?.('Verifying rendered background…');
+  const probed = await probeRenderedBackground(serializeDoc(doc, importedCss), {
+    timeoutMs: 9000,
+  });
+  background = mergeProbedBackground(background, probed);
+  if (probed?.paints) {
+    onProgress?.(`Background verified from rendered page (${probed.origin})`);
+  }
+
   const rawCss = augmentCssWithBackground(importedCss, background);
 
   onProgress?.('Scraping Gaia V2 components…');
@@ -1354,15 +1548,25 @@ export async function importProfileFromHtml(
   const warnings: string[] = [];
   if (!base) {
     warnings.push(
-      'No source URL supplied — linked stylesheets could not be fetched. Add the profile URL to improve fidelity.'
+      'No source URL supplied — linked stylesheets and @imports cannot be resolved. Fill in the profile URL (or keep the <link> tags) so the CSS chain is fetched 1:1.'
     );
   } else {
     const failed = stylesheets.filter((s) => !s.ok);
     if (failed.length) {
-      warnings.push(`${failed.length} stylesheet(s) blocked by CORS — Gaia defaults will be used for those panels.`);
+      warnings.push(
+        `${failed.length} stylesheet(s) blocked by CORS — the browser will still request the original <link> at render time: ${failed
+          .map((s) => `${s.url}${s.label ? ` [${s.label}]` : ''}`)
+          .join(', ')}`
+      );
     }
   }
-  if (!background.detected) warnings.push('No background style detected in the pasted markup.');
+  if (!background.detected) {
+    warnings.push('No background style detected in the pasted markup.');
+  } else if (!background.verified) {
+    warnings.push(
+      'The rendered-background check could not run in this browser — the background falls back to the parsed CSS values.'
+    );
+  }
 
   return {
     elements,
@@ -1375,6 +1579,8 @@ export async function importProfileFromHtml(
       stylesheetsFound: stylesheets.length,
       stylesheetsFetched: stylesheets.filter((s) => s.ok).length,
       stylesheetUrls: stylesheets,
+      cssBytesInlined: rawCss.length,
+      backgroundVerified: !!background.verified,
       background,
       components,
       warnings,

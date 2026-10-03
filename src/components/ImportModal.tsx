@@ -16,13 +16,13 @@ import {
   Wand2,
   FileCode,
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { ProfileElement, CanvasSettings } from '../types/profile';
 import {
   importProfileFromUrl,
   importProfileFromHtml,
   ImportResult,
 } from '../utils/profileImporter';
+import { celebrate } from '../utils/celebrate';
 
 interface ImportModalProps {
   onClose: () => void;
@@ -111,7 +111,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
       setStatus('success');
       // Editable Canvas now renders the same DOM/CSS as Faithful HTML.
       setInitialRenderMode('canvas');
-      celebrate();
+      celebrateImport();
     } catch (err) {
       setStatus('error');
       setError(err instanceof Error ? err.message : String(err));
@@ -140,17 +140,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
     }
   };
 
-  const celebrate = () => {
-    try {
-      confetti({
-        particleCount: 40,
-        spread: 65,
-        origin: { y: 0.6 },
-        colors: ['#06b6d4', '#6366f1', '#a855f7'],
-      });
-    } catch {
-      /* ignore */
-    }
+  const celebrateImport = () => {
+    celebrate({
+      particleCount: 40,
+      spread: 65,
+      origin: { y: 0.6 },
+      colors: ['#06b6d4', '#6366f1', '#a855f7'],
+    });
   };
 
   const handlePasteFromClipboard = async () => {
@@ -473,7 +469,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                     <div className="font-mono text-sm text-slate-100">
                       {result.diagnostics.stylesheetsFetched}/{result.diagnostics.stylesheetsFound}
                     </div>
-                    <div className="text-slate-500">fetched via proxy</div>
+                    <div className="text-slate-500">
+                      inlined · {result.diagnostics.stylesheetUrls.filter((sh) => sh.from === 'import').length} @import
+                    </div>
                   </div>
                   <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
                     <div className="text-slate-500 uppercase tracking-wider text-[9px]">Background</div>
@@ -486,6 +484,18 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                     </div>
                     <div className="text-slate-500 truncate" title={result.diagnostics.background.source}>
                       {result.diagnostics.background.source}
+                    </div>
+                    <div
+                      className={`mt-0.5 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[9px] ${
+                        result.diagnostics.backgroundVerified
+                          ? 'bg-emerald-500/15 text-emerald-300'
+                          : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-2.5 h-2.5" />
+                      {result.diagnostics.backgroundVerified
+                        ? 'verified in rendered page'
+                        : 'parsed from CSS'}
                     </div>
                   </div>
                   <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
@@ -509,6 +519,60 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                       </div>
                     </div>
                   </div>
+                )}
+
+                {result.diagnostics.stylesheetUrls.length > 0 && (
+                  <details className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <summary className="cursor-pointer text-[10px] font-semibold text-slate-300">
+                      CSS chain — {(result.diagnostics.cssBytesInlined / 1024).toFixed(1)}KB inlined
+                      {result.diagnostics.stylesheetUrls.some((sh) => sh.label) && (
+                        <span className="ml-1 font-normal text-cyan-300">
+                          ·{' '}
+                          {Array.from(
+                            new Set(
+                              result.diagnostics.stylesheetUrls
+                                .map((sh) => sh.label)
+                                .filter(Boolean) as string[]
+                            )
+                          ).join(', ')}
+                        </span>
+                      )}
+                    </summary>
+                    <ul className="mt-1.5 space-y-1">
+                      {result.diagnostics.stylesheetUrls.map((sheet, idx) => (
+                        <li
+                          key={`${sheet.url}-${idx}`}
+                          className="flex items-start gap-1.5 font-mono text-[10px]"
+                        >
+                          <span
+                            className={
+                              sheet.ok
+                                ? 'shrink-0 text-emerald-400'
+                                : 'shrink-0 text-amber-400'
+                            }
+                            title={
+                              sheet.ok
+                                ? `inlined${sheet.bytes ? ` (${(sheet.bytes / 1024).toFixed(1)}KB)` : ''}`
+                                : 'blocked by CORS — the browser will retry the original <link>'
+                            }
+                          >
+                            {sheet.ok ? '●' : '○'}
+                          </span>
+                          <span className="shrink-0 rounded bg-slate-800 px-1 text-[9px] text-slate-300">
+                            {sheet.from}
+                          </span>
+                          {sheet.label && (
+                            <span className="shrink-0 rounded bg-cyan-500/15 px-1 text-[9px] text-cyan-200">
+                              {sheet.label}
+                            </span>
+                          )}
+                          <span className="min-w-0 truncate text-slate-400" title={sheet.url}>
+                            {sheet.url}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 )}
 
                 {result.diagnostics.components.length > 0 && (

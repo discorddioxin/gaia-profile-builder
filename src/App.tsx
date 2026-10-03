@@ -717,8 +717,9 @@ export const App: React.FC = () => {
 
       setProfiles((prev) => [...prev, newProfile]);
       setActiveProfileId(newProfile.id);
+      // The dock stays collapsed until an element is picked (the rail button is
+      // always available), matching the "opens on selection" rule.
       setDockTab('properties');
-      setIsDockOpen(true);
     },
     []
   );

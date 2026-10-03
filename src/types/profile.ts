@@ -162,6 +162,8 @@ export interface CanvasSettings {
   height: number; // canvas height e.g. 960
   backgroundColor: string;
   backgroundImage?: string;
+  /** Exact multi-layer `background-image` value (gradients + urls), used by imported profiles. */
+  backgroundImageLayers?: string;
   backgroundRepeat?: string;
   backgroundSize?: string;
   backgroundPosition?: string;

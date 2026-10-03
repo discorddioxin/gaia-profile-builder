@@ -12,8 +12,8 @@ import {
   Info,
   Network,
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { ProfileElement, CanvasSettings } from '../types/profile';
+import { celebrate } from '../utils/celebrate';
 import { transpileProfile } from '../utils/bbcodeTranspiler';
 import { detectGaiaComponentKind, extractColumnsHtml } from '../utils/gaiaSpec';
 import { HtmlTreeView } from './HtmlTreeView';
@@ -111,11 +111,7 @@ export const TranspilerModal: React.FC<TranspilerModalProps> = ({
     if (!text) return;
     navigator.clipboard.writeText(text);
     setCopiedKey(key);
-    try {
-      confetti({ particleCount: 20, spread: 45, origin: { y: 0.85 } });
-    } catch {
-      // ignore
-    }
+    celebrate({ particleCount: 20, spread: 45, origin: { y: 0.85 } });
     setTimeout(() => setCopiedKey(null), 1800);
   };
 

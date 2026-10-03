@@ -68,7 +68,15 @@ export const ImportedCanvas: React.FC<ImportedCanvasProps> = ({
           <iframe
             title={`Imported: ${profile.title}`}
             srcDoc={rawHtml}
-            sandbox="allow-same-origin"
+            // Imported profiles reference third-party CSS (Google Fonts,
+            // Font Awesome, cdnjs/jsDelivr libraries) and Gaia's own assets.
+            // `allow-same-origin` alone still lets scripts run in a same-origin
+            // document, so the flags below only add loading/behaviour grants;
+            // <script> and on* handlers are already stripped by sanitizeHtml,
+            // so nothing executes.
+
+            // allow-top-navigation is deliberately absent.
+            sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-pointer-lock allow-modals"
             className="w-full h-full min-h-[600px] border-0 bg-white"
           />
         ) : (
@@ -79,7 +87,9 @@ export const ImportedCanvas: React.FC<ImportedCanvasProps> = ({
       </div>
 
       <div className="mx-auto w-full max-w-5xl mt-3 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-        <span>Rendered in sandboxed iframe · scripts stripped · same-origin only</span>
+        <span>
+          Rendered in sandboxed iframe · scripts stripped · third-party CSS fonts/images load
+        </span>
         <span>
           {rawHtml ? `${(rawHtml.length / 1024).toFixed(1)}KB HTML` : '—'} ·{' '}
           {profile.rawCss ? `${(profile.rawCss.length / 1024).toFixed(1)}KB CSS` : '—'}

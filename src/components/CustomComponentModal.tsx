@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { BookmarkPlus, X, Check } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { CustomComponent, ProfileElement } from '../types/profile';
+import { celebrate } from '../utils/celebrate';
 
 interface CustomComponentModalProps {
   element: ProfileElement;
@@ -36,17 +36,13 @@ export const CustomComponentModal: React.FC<CustomComponentModalProps> = ({
       elements: [JSON.parse(JSON.stringify(element))],
     };
 
-    // Trigger celebration confetti
-    try {
-      confetti({
-        particleCount: 40,
-        spread: 60,
-        origin: { y: 0.6 },
-        colors: ['#6366f1', '#06b6d4', '#ec4899', '#f59e0b'],
-      });
-    } catch {
-      // Ignore if confetti fails
-    }
+    // Trigger celebration confetti (skipped where 2D canvas is unavailable)
+    celebrate({
+      particleCount: 40,
+      spread: 60,
+      origin: { y: 0.6 },
+      colors: ['#6366f1', '#06b6d4', '#ec4899', '#f59e0b'],
+    });
 
     onSave(newComp);
     onClose();

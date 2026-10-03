@@ -260,3 +260,89 @@ surface tooling landing in the exported document, *Add to builder* in both
 directions, and closing the last tab: **39/39**. The earlier `effects-smoke`,
 `tree-smoke` and `dock-smoke` harnesses (section 7) were removed by a sandbox
 restart and can be regenerated from that section's notes.
+
+---
+
+## 9. Imported CSS fidelity (backgrounds, libraries, shadow-canvas rendering)
+
+Goal: the CSS the builder uses for an imported profile is **the same CSS the
+profile ships**, in the same order, and it renders the same surface — including
+CSS-defined backgrounds, gradients, third-party libraries and `@import` chains.
+Nothing in this pipeline rewrites declarations; the only edits are URL
+absolutization and `@import` inlining.
+
+### 9.1 `src/utils/cssFidelity.ts`
+
+| Export | Purpose |
+| --- | --- |
+| `classifyStylesheet(url)` | Labels a sheet (`kind: 'gaia' \| 'library' \| 'external'`) plus a human label — Gaia theme CSS, Google Fonts, Font Awesome, Animate.css, Bootstrap, Normalize, Hover.css, AOS, jQuery UI, cdnjs/jsDelivr/unpkg/BootstrapCDN. Used by the report. |
+| `rewriteCssAssetUrls(css, base)` | Absolutizes `url(...)` (and `@import` targets) against the owning sheet, so relative background images resolve after inlining. |
+| `findCssImports(css)` | Comment/string-aware scan for `@import` with exact statement + URL offsets. |
+| `resolveCssImports(css, base, fetchCss, { depth })` | Replaces each `@import` **in place** with the fetched sheet text (recursively, depth 3), keeping cascade order. Falls back to an absolutized `@import` when a sheet is blocked. Returns the records for the report. |
+| `probeRenderedBackground(html, { timeoutMs, settleMs })` | Loads the serialized import in a hidden `sandbox="allow-same-origin"` iframe, waits for `link.sheet` + `rAF` settle, and reads the **computed** surface of `html`, `body` and `#viewer`. |
+| `snapshotDeclarations(snapshot)` | Turns a computed snapshot into `background-*` declarations. |
+
+### 9.2 Import pipeline (`src/utils/profileImporter.ts`)
+
+1. `fetchProfileHtml` (direct fetch, then 5 CORS proxies) → `sanitizeHtml`
+   (scripts/`on*`/`javascript:` stripped) → DOMParser.
+2. `extractCss` walks **every** stylesheet in document order:
+   `<link rel="stylesheet">` in `<head>` (fetched, classified, `@import`s
+   resolved recursively), `<style>` in `<head>`, and `<style>` in `<body>`.
+   Each `<style>` block's `@import`s are inlined too — Chrome ignores `@import`
+   inside a shadow-root stylesheet, so inlining is what makes the CSS work on
+   *both* render surfaces. Every sheet (link, import, style) becomes a
+   `StylesheetRecord { url, from, kind, label, bytes, ok }`.
+3. `detectProfileBackground` reads the parsed CSS as before, then
+   `probeRenderedBackground(serializeDoc(doc, importedCss))` renders the
+   document once and `mergeProbedBackground` overwrites the detection with the
+   **exact computed values** (`color`, all `image` layers incl. gradients,
+   `repeat`, `size`, `position`, `attachment`). The result is marked
+   `verified: true` (and reported as "verified in rendered page"), and
+   `CanvasSettings.backgroundImageLayers` keeps the multi-layer value so exports
+   and the editor surface are token-identical.
+4. `augmentCssWithBackground` appends **zero-specificity** rules
+   (`:where(html)`, `:where(body)`) carrying that snapshot, so the surface also
+   paints on surfaces where the original selector cannot match. Imported rules
+   always win — the appended block never uses `revert-layer` or `!important`.
+
+### 9.3 Render surfaces
+
+* **Editable canvas** (`EditableImportedCanvas`) builds a real
+  `<html data-bb-import-html> → <head> + <body data-bb-import-body>` inside the
+  shadow root, so `html`, `body`, `body#viewer`, `html body …` and background
+  propagation behave exactly like a document. Imported text is verbatim; the
+  only preparation is `prepareImportedCssForShadow` (a comment/string-aware
+  scanner) rewriting a **compound-initial `:root` to `html`, because `:root` addresses the
+  shadow root, which paints nothing). Editor-only markers are stripped on
+  commit/export by `stripEditorCruft`.
+* The canvas viewport keeps the canvas height (`settings.height`) instead of
+  shrinking to the measured content height: a browser paints the page surface
+  across the whole viewport, and squeezing the box made CSS backgrounds vanish
+  for profiles whose body box is shorter than the page.
+* **Faithful HTML mode** (`ImportedCanvas`) uses
+  `sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-pointer-lock allow-modals"`
+  (never `allow-top-navigation`) so third-party CSS, fonts and images load.
+  Scripts are already stripped by `sanitizeHtml`, so nothing executes.
+* `ImportModal`'s Scrape Report lists the whole CSS chain (from / label / kind /
+  bytes / fetched-vs-blocked), the inlined byte count, and whether the
+  background was verified in the rendered page.
+
+### 9.4 Verification
+
+* `scripts/verify/background-fidelity.mjs` — real-Chromium, end-to-end: serves
+  `scripts/verify/fixture-server.mjs` (a Gaia-like profile with a linked theme
+  sheet, an `animate.css`-style library, an `@import`-ed profile sheet, a
+  CSS-defined `html` background image, an opaque `body` box and a second
+  gradient profile), imports it through the built app, then diffs the served
+  page against both render surfaces: computed `background-*` per element,
+  `#columns`/column widths, library keyframes, `@import` results, and decoded
+  screenshot pixels at matched points. **34/34.**
+  Requires `npm i --no-save puppeteer-core @sparticuz/chromium` and a Chromium
+  binary (`/tmp/chromium` + `LD_LIBRARY_PATH=/tmp/gchromium/lib`); run with
+  `npm run verify:fidelity`.
+* `.tmp/ui-smoke.tsx` — jsdom walk of the session (welcome screen, blank New
+  Profile, collapsed dock + rail open/close + select-to-open, Profile Tools,
+  *Add to builder*, HTML import with a stubbed CSS chain, real `<html>/<body>`
+  in the shadow canvas, `:root` → `html`, verbatim multi-layer background,
+  closing every tab): **30/30**.

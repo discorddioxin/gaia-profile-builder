@@ -509,7 +509,13 @@ body#viewer {
   margin: 0;
   padding: 0;
   background-color: ${settings.backgroundColor || '#0e111a'};
-  ${settings.backgroundImage ? `background-image: url('${settings.backgroundImage}');` : ''}
+  ${
+    settings.backgroundImageLayers
+      ? `background-image: ${settings.backgroundImageLayers};`
+      : settings.backgroundImage
+        ? `background-image: url('${settings.backgroundImage}');`
+        : ''
+  }
   ${settings.backgroundRepeat ? `background-repeat: ${settings.backgroundRepeat};` : 'background-repeat: no-repeat;'}
   ${settings.backgroundSize ? `background-size: ${settings.backgroundSize};` : 'background-size: cover;'}
   background-position: center top;

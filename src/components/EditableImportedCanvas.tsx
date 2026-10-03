@@ -336,21 +336,101 @@ const EDITOR_CSS = `
     /* Prevent link nav on click */
     pointer-events: auto;
   }
+  /*
+   * The imported document keeps a real <html>/<body> pair inside the shadow
+   * tree so page-level selectors and background propagation behave exactly as
+   * they do in a browser. These rules only give them the viewport-sized box a
+   * real page would have.
+   */
+  html[data-bb-import-html] {
+    display: block;
+    min-height: 100%;
+    width: 100%;
+  }
+  /*
+   * No min-height here: on a real page the body box is only as tall as its
+   * content, which is what lets the html/canvas background show below it.
+   * Stretching it would change where the profile's background is visible.
+   */
   body[data-bb-import-body] {
     display: block;
     width: 100%;
-    min-height: 100%;
   }
 `;
 
 /**
- * True when a selector's final compound addresses the document root
- * (`html`, `body`, `body#viewer`, `body.js`, `:root`, …).
+ * Prepare imported CSS for the shadow root.
+ *
+ * The canvas now renders a real `<html>` element inside the shadow tree, so
+ * `html`, `body`, `html body`, `body#viewer` … all match natively and the
+ * stylesheet text is used **verbatim** — that is what makes the render 1:1.
+ *
+ * The single exception is `:root`: in a shadow tree it addresses the shadow
+ * root (which paints nothing), so it is pointed at the shadow `<html>` element,
+ * which is exactly what `:root` means in a real document (same specificity).
  */
-function isRootSurfaceSelector(selector: string): boolean {
-  const last = selector.split(/[\s>+~]+/).filter(Boolean).pop() || '';
-  return /^(html|body|:root)([#.][\w-]+|:{1,2}[\w-]+(\([^)]*\))?)*$/i.test(last);
+function prepareImportedCssForShadow(css: string): string {
+  // Plain scanner: skip comments/strings and only touch a `:root` that starts a
+  // compound selector (`:root`, `html :root`, `:root > body`, `a, :root`).
+  let out = '';
+  let i = 0;
+  let inComment = false;
+  let quote: string | null = null;
+
+  while (i < css.length) {
+    const ch = css[i];
+    const next = css[i + 1];
+
+    if (inComment) {
+      out += ch;
+      if (ch === '*' && next === '/') {
+        out += next;
+        inComment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if (quote) {
+      out += ch;
+      if (ch === '\\') {
+        out += next ?? '';
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inComment = true;
+      out += '/*';
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ':' && css.slice(i, i + 5).toLowerCase() === ':root') {
+      const before = out.replace(/\s+$/, '').slice(-1);
+      const startsCompound = before === '' || /[,{};>+~]/.test(before);
+      if (startsCompound) {
+        out += 'html';
+        i += 5;
+        continue;
+      }
+    }
+    out += ch;
+    i += 1;
+  }
+
+  return out;
 }
+
 
 /**
  * Shadow DOM has no real document <html>, and the editor keeps the imported
@@ -454,48 +534,23 @@ function sameMultiRects(a: MultiRect[], b: MultiRect[]): boolean {
   return a.every((rect, i) => rect.bbId === b[i].bbId && sameRect(rect, b[i]));
 }
 
-function adaptImportedCssForShadow(css: string): string {
-  return css.replace(/(^|})\s*([^{}@]+)\{([^{}]*)\}/g, (match, brace, selectorText, body) => {
-    const selectors = String(selectorText)
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (selectors.length === 0) return match;
-
-    const aliases: string[] = [];
-    const bodyHasBackground = /background(-image|-color|-repeat|-size|-position|-attachment)?\s*:/i.test(
-      String(body)
-    );
-
-    selectors.forEach((selector) => {
-      const exactRoot = selector === 'html' || selector === 'body' || selector === 'html body';
-      if (exactRoot || (bodyHasBackground && isRootSurfaceSelector(selector))) {
-        aliases.push(':host', 'body[data-bb-import-body]');
-      }
-    });
-
-    const merged = [...selectors, ...aliases].filter((s, i, arr) => arr.indexOf(s) === i);
-    return `${brace}\n${merged.join(', ')} {${body}}`;
-  });
-}
-
-/**
- * Fallback surface styles derived from the scraped import (settings carry the
- * background detected from CSS), rendered *before* imported styles so the
- * original cascade still wins when it defines its own background.
- */
 function buildSurfaceFallbackCss(settings: CanvasSettings): string {
-  const hasImage = !!settings.backgroundImage;
+  const layers = settings.backgroundImageLayers || '';
+  const url = settings.backgroundImage;
+  const hasImage = !!layers || !!url;
   const color = settings.backgroundColor;
   if (!hasImage && (!color || color === 'transparent')) return '';
-  return `:host {
+  // Zero specificity: any rule from the imported profile wins, so this only
+  // fills in when the profile itself does not paint the surface.
+  return `:where(html[data-bb-import-html]), :where(:host) {
   background-color: ${color || 'transparent'};
-  ${hasImage ? `background-image: url('${settings.backgroundImage}');` : ''}
+  ${layers ? `background-image: ${layers};` : hasImage ? `background-image: url('${url}');` : ''}
   background-repeat: ${settings.backgroundRepeat || (hasImage ? 'repeat' : 'no-repeat')};
   background-size: ${settings.backgroundSize || 'auto'};
-  background-position: ${settings.backgroundPosition || 'left top'};
+  background-position: ${settings.backgroundPosition || 'center top'};
   background-attachment: ${settings.backgroundAttachment || 'scroll'};
-}`;
+}
+`;
 }
 
 export const EditableImportedCanvas = forwardRef<
@@ -1620,6 +1675,8 @@ export const EditableImportedCanvas = forwardRef<
       // Editor-only plane marker; the absolute positioning itself lives in the
       // element's inline style (and `bbfx-*` classes stay: exported CSS uses them).
       root.removeAttribute('data-bb-absolute');
+      root.removeAttribute('data-bb-import-html');
+      root.removeAttribute('data-bb-import-head');
       root.removeAttribute('data-bb-builder-local');
       root.removeAttribute('data-bb-builder-group');
       root.removeAttribute('data-bb-builder-global');
@@ -1630,6 +1687,8 @@ export const EditableImportedCanvas = forwardRef<
       root.querySelectorAll('[data-bb-editing]').forEach((n) => n.removeAttribute('data-bb-editing'));
       root.querySelectorAll('[data-bb-moving]').forEach((n) => n.removeAttribute('data-bb-moving'));
       root.querySelectorAll('[data-bb-absolute]').forEach((n) => n.removeAttribute('data-bb-absolute'));
+      root.querySelectorAll('[data-bb-import-html]').forEach((n) => n.removeAttribute('data-bb-import-html'));
+      root.querySelectorAll('[data-bb-import-head]').forEach((n) => n.removeAttribute('data-bb-import-head'));
       root.querySelectorAll('[data-bb-builder-local]').forEach((n) => n.removeAttribute('data-bb-builder-local'));
       root.querySelectorAll('[data-bb-builder-group]').forEach((n) => n.removeAttribute('data-bb-builder-group'));
       root.querySelectorAll('[data-bb-builder-global]').forEach((n) => n.removeAttribute('data-bb-builder-global'));
@@ -1637,13 +1696,12 @@ export const EditableImportedCanvas = forwardRef<
       root.querySelectorAll('[contenteditable]').forEach((n) => n.removeAttribute('contenteditable'));
     };
 
+    // Head nodes (in original order) live inside the shadow <html><head>.
     const headParts: string[] = [];
-    Array.from(shadow.childNodes).forEach((node) => {
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
+    Array.from(shadow.querySelectorAll(`[${HEAD_NODE_MARK}]`)).forEach((node) => {
       const el = node as HTMLElement;
       if (el.tagName === 'STYLE' && el.hasAttribute(EDITOR_STYLE_MARK)) return;
       if (el.tagName === 'STYLE' && el.hasAttribute(SURFACE_STYLE_MARK)) return;
-      if (!el.hasAttribute(HEAD_NODE_MARK)) return;
       const clone = el.cloneNode(true) as HTMLElement;
       stripEditorCruft(clone);
       headParts.push(clone.outerHTML);
@@ -1781,18 +1839,21 @@ export const EditableImportedCanvas = forwardRef<
     // as possible. Complex Gaia layouts depend heavily on stylesheet order.
     shadow.innerHTML = '';
 
-    // Scraped background (often a CSS `background:` rule rather than an <img>)
-    // is applied as a base layer so it always renders, even if the original
-    // selector cannot match inside this shadow root.
-    const surfaceCss = buildSurfaceFallbackCss(settings);
-    if (surfaceCss) {
-      const surfaceStyle = document.createElement('style');
-      surfaceStyle.setAttribute(SURFACE_STYLE_MARK, '');
-      surfaceStyle.textContent = surfaceCss;
-      shadow.appendChild(surfaceStyle);
+    // The imported page keeps its real <html>/<body> pair inside the shadow
+    // tree: page-level selectors (`html`, `body#viewer`, `html body …`) and
+    // background propagation then behave exactly as they do in a browser, and
+    // the profile CSS is used verbatim — no selector rewriting.
+    const htmlShell = document.createElement('html') as HTMLElement;
+    htmlShell.setAttribute('data-bb-import-html', '');
+    if (doc.documentElement) {
+      Array.from(doc.documentElement.attributes).forEach((attr) => {
+        htmlShell.setAttribute(attr.name, attr.value);
+      });
     }
 
-    const stylesheetLinks: HTMLLinkElement[] = [];
+    const headShell = document.createElement('head');
+    headShell.setAttribute('data-bb-import-head', '');
+
     Array.from(doc.head?.childNodes || []).forEach((node) => {
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const el = node as HTMLElement;
@@ -1802,26 +1863,17 @@ export const EditableImportedCanvas = forwardRef<
       clone.setAttribute(HEAD_NODE_MARK, '');
 
       if (clone.tagName === 'STYLE') {
-        clone.textContent = adaptImportedCssForShadow(clone.textContent || '');
+        clone.textContent = prepareImportedCssForShadow(clone.textContent || '');
       }
-      if (clone.tagName === 'LINK' && (clone as HTMLLinkElement).rel === 'stylesheet') {
-        stylesheetLinks.push(clone as HTMLLinkElement);
-      }
-      shadow.appendChild(clone);
+      headShell.appendChild(clone);
     });
 
-    // Editor chrome styles must come after imported styles so outlines are visible.
-    const editorStyle = document.createElement('style');
-    editorStyle.setAttribute(EDITOR_STYLE_MARK, '');
-    editorStyle.textContent = EDITOR_CSS;
-    shadow.appendChild(editorStyle);
-
-    // Fallback adapted CSS only if there were no head style/link nodes at all.
-    if (!shadow.querySelector(`[${HEAD_NODE_MARK}]`)) {
+    // Fallback CSS only if there were no head style/link nodes at all.
+    if (!headShell.querySelector(`[${HEAD_NODE_MARK}]`)) {
       const fallbackStyle = document.createElement('style');
       fallbackStyle.setAttribute(HEAD_NODE_MARK, '');
-      fallbackStyle.textContent = adaptImportedCssForShadow(profile.rawCss || '');
-      shadow.appendChild(fallbackStyle);
+      fallbackStyle.textContent = prepareImportedCssForShadow(profile.rawCss || '');
+      headShell.appendChild(fallbackStyle);
     }
 
     const bodyShell = document.createElement('body');
@@ -1832,7 +1884,29 @@ export const EditableImportedCanvas = forwardRef<
       });
     }
     bodyShell.innerHTML = bodyContent;
-    shadow.appendChild(bodyShell);
+
+    htmlShell.appendChild(headShell);
+    htmlShell.appendChild(bodyShell);
+    shadow.appendChild(htmlShell);
+
+    // Scraped background (often a CSS `background:` rule rather than an <img>)
+    // is applied as a zero-specificity base layer so it renders even when the
+    // original selector cannot match inside this shadow root. Imported rules
+    // always win over it.
+    const surfaceCss = buildSurfaceFallbackCss(settings);
+    if (surfaceCss) {
+      const surfaceStyle = document.createElement('style');
+      surfaceStyle.setAttribute(SURFACE_STYLE_MARK, '');
+      surfaceStyle.textContent = surfaceCss;
+      shadow.appendChild(surfaceStyle);
+    }
+
+    // Editor chrome styles must come after imported styles so outlines are visible.
+    const editorStyle = document.createElement('style');
+    editorStyle.setAttribute(EDITOR_STYLE_MARK, '');
+    editorStyle.textContent = EDITOR_CSS;
+    shadow.appendChild(editorStyle);
+
     ensureBbIds(bodyShell);
 
     // Re-attach the effect CSS (keyframes / hover rules) — the rebuild cleared
@@ -2588,7 +2662,13 @@ export const EditableImportedCanvas = forwardRef<
   const mobileFitScale = isMobileViewport ? committedSize.width / layoutWidth : 1;
   const contentScale = mobileFitScale * zoom;
   const actualContentHeight = contentBottomHeight || committedSize.height;
-  const visibleHeight = Math.min(committedSize.height, actualContentHeight);
+  // Imported profiles are rendered in the canvas viewport, not squeezed to the
+  // measured content height. A browser paints the page surface (`html { … }`,
+  // the propagated canvas background) across the whole viewport, and that
+  // surface is usually what the author sees as "the profile background" —
+  // shrinking the box would make it invisible for profiles whose body box is
+  // shorter than the page.
+  const visibleHeight = committedSize.height;
   const hostHeight = isMobileViewport ? visibleHeight / mobileFitScale : visibleHeight;
 
   return (
