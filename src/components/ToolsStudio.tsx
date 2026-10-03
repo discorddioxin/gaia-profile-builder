@@ -47,7 +47,7 @@ export const ToolsStudio: React.FC<ToolsStudioProps> = ({ onSendToBuilder, onBac
 
   return (
     <div className="flex flex-1 min-h-0 w-full">
-      <aside className="hidden w-60 shrink-0 flex-col gap-1.5 border-r border-slate-800 bg-slate-950/80 p-3 md:flex">
+      <aside className="hidden w-48 shrink-0 flex-col gap-1 border-r border-slate-800 bg-slate-950/80 p-2 md:flex">
         <div className="flex items-center gap-1.5 px-1 pb-1">
           <FlaskConical className="h-4 w-4 text-pink-400" />
           <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
@@ -58,7 +58,7 @@ export const ToolsStudio: React.FC<ToolsStudioProps> = ({ onSendToBuilder, onBac
           <button
             key={tool.id}
             onClick={() => setTab(tool.id)}
-            className={`flex items-start gap-2 rounded-xl border p-2.5 text-left transition-colors ${
+            className={`flex items-center gap-2 rounded-lg border p-2 text-left transition-colors ${
               tab === tool.id
                 ? 'border-pink-400/60 bg-pink-500/10'
                 : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
@@ -73,7 +73,6 @@ export const ToolsStudio: React.FC<ToolsStudioProps> = ({ onSendToBuilder, onBac
               >
                 {tool.label}
               </span>
-              <span className="block text-[10px] leading-snug text-slate-500">{tool.blurb}</span>
             </span>
           </button>
         ))}

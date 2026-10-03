@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 interface ToolsPreviewProps {
   /** A complete HTML document (head + #columns body) to render sandboxed. */
   document: string;
-  height?: number;
+  height?: number | string;
 }
 
 /**
@@ -11,7 +11,7 @@ interface ToolsPreviewProps {
  * rendered in an iframe so the tools show exactly what Gaia will receive —
  * column reflow, keyframes and all.
  */
-export const ToolsPreview: React.FC<ToolsPreviewProps> = ({ document: doc, height = 340 }) => {
+export const ToolsPreview: React.FC<ToolsPreviewProps> = ({ document: doc, height = 'calc(100vh - 190px)' }) => {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const [expand, setExpand] = useState(false);
 
@@ -21,13 +21,13 @@ export const ToolsPreview: React.FC<ToolsPreviewProps> = ({ document: doc, heigh
   }, [doc]);
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-slate-800 bg-[#0b0f1a]">
+    <div className="relative min-h-[360px] flex-1 overflow-hidden rounded-xl border border-slate-800 bg-[#0b0f1a]">
       <iframe
         ref={frameRef}
         title="Profile tools preview"
         sandbox=""
         className="w-full"
-        style={{ height: expand ? height * 1.75 : height, border: 'none' }}
+        style={{ height: expand ? 'calc(100vh - 120px)' : height, border: 'none' }}
       />
       <button
         onClick={() => setExpand((v) => !v)}

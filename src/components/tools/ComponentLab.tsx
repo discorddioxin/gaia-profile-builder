@@ -51,29 +51,32 @@ const LAB_SETTINGS: CanvasSettings = {
   forumTheme: 'dark-cyber',
 };
 
-type MotionTab = 'animation' | 'morph' | '3d';
-
 interface MotionState {
-  preset: AnimationPreset;
-  trigger: 'always' | 'hover';
   duration: number;
   delay: number;
   timing: 'linear' | 'ease' | 'ease-in-out' | 'ease-out';
   iteration: 'infinite' | '1' | '2' | '3';
   direction: 'normal' | 'alternate' | 'reverse';
-  tab: MotionTab;
 }
 
 const DEFAULT_MOTION: MotionState = {
-  preset: 'float',
-  trigger: 'always',
   duration: 3,
   delay: 0,
   timing: 'ease-in-out',
   iteration: 'infinite',
   direction: 'normal',
-  tab: 'animation',
 };
+
+const MOTION_GROUPS = [
+  { label: 'Animations', ids: ANIMATION_PRESETS.slice(0, 11).map((preset) => preset.id) },
+  { label: 'Morphs', ids: MORPH_PRESETS.map((preset) => preset.id) },
+  { label: '3D', ids: THREE_D_PRESETS.map((preset) => preset.id) },
+];
+const ALL_MOTION_PRESETS = [
+  ...ANIMATION_PRESETS.slice(0, 11),
+  ...MORPH_PRESETS,
+  ...THREE_D_PRESETS,
+];
 
 interface ComponentLabProps {
   onSendToBuilder: (element: ProfileElement) => void;
@@ -90,7 +93,8 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
   const [accent, setAccent] = useState('#8b5cf6');
   const [clipPresetId, setClipPresetId] = useState<string | null>(null);
   const [maskPresetId, setMaskPresetId] = useState<string | null>(null);
-  const [motion, setMotion] = useState<MotionState | null>(null);
+  const [motionIds, setMotionIds] = useState<string[]>([]);
+  const [motion, setMotion] = useState<MotionState>(DEFAULT_MOTION);
   const [surfaceIds, setSurfaceIds] = useState<string[]>([]);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -137,34 +141,35 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
       gaia: { ...base.gaia!, title: resolvedTitle },
       clip,
       mask,
-      animation: motion
+      animation: motionIds.length
         ? {
             enabled: true,
-            preset: motion.preset,
+            preset: motionIds[0] as AnimationPreset,
             duration: motion.duration,
             delay: motion.delay,
             timing: motion.timing,
             iteration: motion.iteration,
             direction: motion.direction,
-            trigger: motion.trigger,
+            trigger: 'always',
           }
         : { ...base.animation, enabled: false },
-      customCss: surfaceCss || undefined,
+      // A comma-separated animation list lets independent keyframes run at once.
+      // `animation-composition: add` helps transform-based 3D/morph layers combine.
+      customCss: [
+        surfaceCss,
+        motionIds.length
+          ? `animation: ${motionIds.map((id) => `${id} ${motion.duration}s ${motion.timing} ${motion.delay}s ${motion.iteration} ${motion.direction}`).join(', ')} !important; animation-composition: add;`
+          : '',
+      ].filter(Boolean).join(' ' ) || undefined,
     };
-  }, [kind, column, title, def, clipPresetId, maskPresetId, motion, surfaceIds, accent]);
+  }, [kind, column, title, def, clipPresetId, maskPresetId, motionIds, motion, surfaceIds, accent]);
 
   const output = useMemo(() => transpileProfile([element], LAB_SETTINGS), [element]);
 
-  const motionPreset = useMemo(() => {
-    if (!motion) return null;
-    const pool =
-      motion.tab === 'morph'
-        ? MORPH_PRESETS
-        : motion.tab === '3d'
-          ? THREE_D_PRESETS
-          : ANIMATION_PRESETS.map((p) => ({ id: p.id, label: p.label, description: p.description, icon: p.icon }));
-    return pool.find((p) => p.id === motion.preset) || null;
-  }, [motion]);
+  const selectedMotionPresets = ALL_MOTION_PRESETS.filter((preset) => motionIds.includes(preset.id));
+
+  const toggleMotion = (id: string) =>
+    setMotionIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
 
   const toggleSurface = (id: string) =>
     setSurfaceIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -172,7 +177,7 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
   const activeTools = [
     clipPresetId ? 'clip' : '',
     maskPresetId ? 'mask' : '',
-    motion ? `motion:${motion.tab}` : '',
+    motionIds.length ? `motion:${motionIds.length}` : '',
     surfaceIds.length ? `surface:${surfaceIds.length}` : '',
   ].filter(Boolean);
 
@@ -189,22 +194,23 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
   const reset = () => {
     setClipPresetId(null);
     setMaskPresetId(null);
-    setMotion(null);
+    setMotionIds([]);
+    setMotion(DEFAULT_MOTION);
     setSurfaceIds([]);
   };
 
   return (
     <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
       {/* -------------------------------- controls ------------------------- */}
-      <div className="flex-1 min-w-0 overflow-y-auto p-4 space-y-4">
+      <div className="w-full min-w-0 overflow-y-auto p-2.5 space-y-2.5 lg:w-1/2">
         {/* content type */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 space-y-2.5">
           <div className="flex items-center justify-between">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
               1 · Gaia content type
             </h3>
-            <span className="font-mono text-[10px] text-indigo-300">
-              .{def.panelClass.split(' ')[0]}
+            <span className="text-right font-mono text-[9px] leading-tight text-indigo-300" title="Root ID / title ID / Gaia panel class">
+              {def.panelId ? `#${def.panelId} · #${def.titleId}` : `#id_custom_1 · #custom_1_title`} · .{def.panelClass.split(' ')[0]}
             </span>
           </div>
           <div className="space-y-3">
@@ -278,7 +284,7 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
         </section>
 
         {/* clip + mask */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 space-y-2.5">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
             2 · Shape tooling
           </h3>
@@ -345,164 +351,59 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
         </section>
 
         {/* motion */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 space-y-2.5">
           <div className="flex items-center justify-between">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
               3 · Motion tooling
             </h3>
-            {motion && (
+            {motionIds.length > 0 && (
               <button
-                onClick={() => setMotion(null)}
+                onClick={() => setMotionIds([])}
                 className="text-[10px] text-slate-500 hover:text-slate-300"
               >
-                clear motion
+                clear selection
               </button>
             )}
           </div>
 
-          <div className="flex gap-1.5">
-            {(
-              [
-                { id: 'animation', label: 'Animations', icon: <Sparkles className="h-3.5 w-3.5" /> },
-                { id: 'morph', label: 'Morphs', icon: <Shapes className="h-3.5 w-3.5" /> },
-                { id: '3d', label: '3D', icon: <Box className="h-3.5 w-3.5" /> },
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() =>
-                  setMotion((prev) => ({
-                    ...(prev || DEFAULT_MOTION),
-                    tab: tab.id,
-                    preset:
-                      tab.id === 'morph'
-                        ? MORPH_PRESETS[0].id
-                        : tab.id === '3d'
-                          ? THREE_D_PRESETS[0].id
-                          : 'float',
-                  }))
-                }
-                className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
-                  motion?.tab === tab.id
-                    ? 'border-pink-400 bg-pink-500/20 text-pink-100'
-                    : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                {tab.icon}
-                {tab.label}
-              </button>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {MOTION_GROUPS.map((group) => (
+              <div key={group.label}>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{group.label}</div>
+                <div className="flex flex-wrap gap-1">
+                  {group.ids.map((id) => {
+                    const preset = ALL_MOTION_PRESETS.find((item) => item.id === id);
+                    if (!preset) return null;
+                    const active = motionIds.includes(id);
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => toggleMotion(id)}
+                        title={preset.description}
+                        className={`rounded-lg border px-2 py-1 text-[10px] transition-colors ${active ? 'border-pink-400 bg-pink-500/20 text-pink-100' : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'}`}
+                      >
+                        <span className="mr-1">{preset.icon}</span>{preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             ))}
           </div>
 
-          {motion && (
-            <>
-              <div className="flex flex-wrap gap-1.5">
-                {(motion.tab === 'morph'
-                  ? MORPH_PRESETS
-                  : motion.tab === '3d'
-                    ? THREE_D_PRESETS
-                    : ANIMATION_PRESETS
-                ).map((preset) => (
-                  <button
-                    key={preset.id}
-                    onClick={() =>
-                      setMotion((prev) => ({
-                        ...(prev || DEFAULT_MOTION),
-                        preset: preset.id as AnimationPreset,
-                      }))
-                    }
-                    title={'description' in preset ? preset.description : undefined}
-                    className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
-                      motion.preset === preset.id
-                        ? 'border-pink-400 bg-pink-500/20 text-pink-100'
-                        : 'border-slate-800 bg-slate-950 text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    <span>{preset.icon}</span>
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] text-slate-500">Trigger</span>
-                  <select
-                    value={motion.trigger}
-                    onChange={(e) =>
-                      setMotion((prev) => ({
-                        ...(prev || DEFAULT_MOTION),
-                        trigger: e.target.value as MotionState['trigger'],
-                      }))
-                    }
-                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"
-                  >
-                    <option value="always">Always</option>
-                    <option value="hover">On hover</option>
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] text-slate-500">Duration (s)</span>
-                  <input
-                    type="number"
-                    min={0.2}
-                    step={0.2}
-                    value={motion.duration}
-                    onChange={(e) =>
-                      setMotion((prev) => ({
-                        ...(prev || DEFAULT_MOTION),
-                        duration: Number(e.target.value) || 1,
-                      }))
-                    }
-                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"
-                  />
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] text-slate-500">Easing</span>
-                  <select
-                    value={motion.timing}
-                    onChange={(e) =>
-                      setMotion((prev) => ({
-                        ...(prev || DEFAULT_MOTION),
-                        timing: e.target.value as MotionState['timing'],
-                      }))
-                    }
-                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"
-                  >
-                    <option value="ease-in-out">ease-in-out</option>
-                    <option value="ease">ease</option>
-                    <option value="ease-out">ease-out</option>
-                    <option value="linear">linear</option>
-                  </select>
-                </label>
-                <label className="flex flex-col gap-1">
-                  <span className="text-[10px] text-slate-500">Iteration</span>
-                  <select
-                    value={motion.iteration}
-                    onChange={(e) =>
-                      setMotion((prev) => ({
-                        ...(prev || DEFAULT_MOTION),
-                        iteration: e.target.value as MotionState['iteration'],
-                      }))
-                    }
-                    className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"
-                  >
-                    <option value="infinite">infinite</option>
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    <option value="3">3</option>
-                  </select>
-                </label>
-              </div>
-              <p className="text-[10px] text-slate-500">
-                One motion layer per component — clip, mask and surface stack on top of it.
-              </p>
-            </>
-          )}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Duration (s)</span><input type="number" min={0.2} step={0.2} value={motion.duration} onChange={(e) => setMotion((prev) => ({ ...prev, duration: Number(e.target.value) || 1 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+            <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Delay (s)</span><input type="number" min={0} step={0.1} value={motion.delay} onChange={(e) => setMotion((prev) => ({ ...prev, delay: Number(e.target.value) || 0 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+            <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Easing</span><select value={motion.timing} onChange={(e) => setMotion((prev) => ({ ...prev, timing: e.target.value as MotionState['timing'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="ease-in-out">ease-in-out</option><option value="ease">ease</option><option value="ease-out">ease-out</option><option value="linear">linear</option></select></label>
+            <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Iterations</span><select value={motion.iteration} onChange={(e) => setMotion((prev) => ({ ...prev, iteration: e.target.value as MotionState['iteration'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="infinite">infinite</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
+          </div>
+          <p className="text-[10px] text-slate-500">Select multiple animation, morph, and 3D layers. Their keyframes run together; clip, mask, and surface styling remain stacked alongside them.</p>
         </section>
 
         {/* surface */}
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 space-y-2.5">
           <div className="flex items-center justify-between">
             <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
               4 · Surface tooling
@@ -543,7 +444,7 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
       </div>
 
       {/* -------------------------------- preview -------------------------- */}
-      <div className="flex w-full shrink-0 flex-col gap-3 border-t border-slate-800 bg-slate-950/60 p-4 lg:w-[420px] lg:border-l lg:border-t-0">
+      <div className="flex w-full min-h-[440px] shrink-0 flex-col gap-2 border-t border-slate-800 bg-slate-950/60 p-2.5 lg:w-1/2 lg:min-h-0 lg:border-l lg:border-t-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
             <Wand2 className="h-3.5 w-3.5 text-pink-400" />
@@ -582,11 +483,9 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
               </span>
             ))
           )}
-          {motionPreset && (
-            <span className="rounded bg-pink-500/10 px-1.5 py-0.5 font-mono text-[10px] text-pink-200">
-              {motionPreset.label}
-            </span>
-          )}
+          {selectedMotionPresets.map((preset) => (
+            <span key={preset.id} className="rounded bg-pink-500/10 px-1.5 py-0.5 font-mono text-[10px] text-pink-200">{preset.label}</span>
+          ))}
         </div>
 
         <div className="flex gap-1.5">
@@ -613,8 +512,8 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
             row('min-height', `${element.height}px`),
             clipPresetId ? row('clip-path', CLIP_PRESETS[clipPresetId] ? 'polygon(…)' : 'none') : '',
             maskPresetId ? row('mask-image', `preset:${maskPresetId}`) : '',
-            motion
-              ? row('animation', `${motion.preset} ${motion.duration}s ${motion.timing} ${motion.trigger === 'hover' ? '(hover)' : ''}`)
+            motionIds.length
+              ? row('animation', `${motionIds.join(', ')} · ${motion.duration}s ${motion.timing}`)
               : '',
             surfaceIds.length ? row('surface', surfaceIds.join(', ')) : '',
             '}',

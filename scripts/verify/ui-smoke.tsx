@@ -266,6 +266,13 @@ const addToBuilder = buttonByText(/Add to builder/i);
 check('tools expose Add to builder', !!addToBuilder);
 
 await click(buttonByText(/Details|Comments|Friends/), 'content type chip');
+check('tools expose Gaia spec IDs', /#id_(details|comments|friends).*#(details|comments|friends)_title/.test(text()));
+const glitchChip = buttonByText(/Cyber Glitch/);
+const tiltChip = buttonByText(/3D Tilt Sway/);
+if (glitchChip) await click(glitchChip, 'Cyber Glitch motion layer');
+if (tiltChip) await click(tiltChip, '3D Tilt Sway motion layer');
+check('animation and 3D effects are multi-selectable', !!glitchChip && !!tiltChip && glitchChip.getAttribute('aria-pressed') === 'true' && tiltChip.getAttribute('aria-pressed') === 'true');
+check('selected motion layers combine in the live CSS', /glitchShake,\s*tilt3d/.test(text()));
 const beforeTools = canvasCount();
 await click(addToBuilder, 'Add to builder');
 await settle(200);
