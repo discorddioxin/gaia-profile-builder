@@ -17,6 +17,8 @@ interface ImportedEffectsPanelProps {
   onMakeAbsolute: (bbId: string) => void;
   onMakeFlow: (bbId: string) => void;
   multiSelectCount?: number;
+  /** The node summary card is hidden when the section is embedded in a tab. */
+  showHeader?: boolean;
 }
 
 /**
@@ -33,6 +35,7 @@ export const ImportedEffectsPanel: React.FC<ImportedEffectsPanelProps> = ({
   onMakeAbsolute,
   onMakeFlow,
   multiSelectCount = 0,
+  showHeader = true,
 }) => {
   // --- parse current CSS back into builder configs -------------------------
   const clip: ClipConfig = useMemo(
@@ -90,6 +93,7 @@ export const ImportedEffectsPanel: React.FC<ImportedEffectsPanelProps> = ({
 
   return (
     <div className="space-y-3">
+      {showHeader && (
       <div className="rounded-lg border border-slate-800 bg-slate-950/70 p-2.5">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
@@ -112,6 +116,7 @@ export const ImportedEffectsPanel: React.FC<ImportedEffectsPanelProps> = ({
           </span>
         </div>
       </div>
+      )}
 
       {section === 'position' && (
         <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 space-y-2">

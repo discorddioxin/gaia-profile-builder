@@ -782,6 +782,7 @@ export const DockPanel: React.FC<DockPanelProps> = ({
                     node={importedNode}
                     effects={importedEffects}
                     section="position"
+                    showHeader={false}
                     multiSelectCount={importedMultiSelectCount}
                     onApplyEffects={importedEffectsActions.applyEffects}
                     onMakeAbsolute={importedEffectsActions.makeAbsolute}

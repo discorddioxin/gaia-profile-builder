@@ -341,7 +341,6 @@ export const HtmlTreeView: React.FC<HtmlTreeViewProps> = ({ html, hint }) => {
             roots={roots}
             expandAllState={expanded}
             onToggle={toggle}
-            fallback={renderNode}
           />
         ) : (
           visibleRoots.map((node) => renderNode(node, 0, counter))
@@ -377,8 +376,7 @@ const StructureOnlyTree: React.FC<{
   roots: HtmlNode[];
   expandAllState: Set<string>;
   onToggle: (key: string) => void;
-  fallback: (node: HtmlNode, depth: number, counter: { rendered: number }) => React.ReactNode;
-}> = ({ roots, expandAllState, onToggle, fallback }) => {
+}> = ({ roots, expandAllState, onToggle }) => {
   const counter = { rendered: 0 };
   const render = (node: HtmlNode, depth: number): React.ReactNode => {
     if (node.nodeType !== 'element') return null;
@@ -417,6 +415,5 @@ const StructureOnlyTree: React.FC<{
     );
   };
 
-  void fallback;
   return <>{roots.map((node) => render(node, 0))}</>;
 };
