@@ -1,5 +1,6 @@
 import { ProfileElement, CanvasSettings } from '../types/profile';
 import { CLIP_PRESETS } from './presets';
+import { extractCanonicalUrl } from './importFile';
 import {
   BackgroundSnapshot,
   ProbedBackground,
@@ -1484,10 +1485,16 @@ export async function importProfileFromHtml(
 
   assertGaiaV2DefaultLayout(doc);
 
-  // If the user provided a source URL, rewrite relative URLs so images resolve
-  if (sourceUrl) {
+  // A saved page carries its own URL (`<link rel=canonical>`, og:url), so a file
+  // dropped in without a source URL can still resolve its whole CSS chain and
+  // relative images.
+  const canonical = sourceUrl ? null : extractCanonicalUrl(clean);
+  const base = sourceUrl || canonical || '';
+
+  // If we have a base URL, rewrite relative URLs so images resolve
+  if (base) {
     try {
-      rewriteRelativeUrls(doc, sourceUrl);
+      rewriteRelativeUrls(doc, base);
     } catch {
       /* ignore */
     }
@@ -1496,7 +1503,6 @@ export async function importProfileFromHtml(
   // Stamp nodes BEFORE fetching linked CSS (fetch does not mutate the DOM).
   injectBbIds(doc);
 
-  const base = sourceUrl || '';
   const stylesheets: StylesheetRecord[] = [];
   let importedCss = '';
 
@@ -1548,7 +1554,7 @@ export async function importProfileFromHtml(
   const warnings: string[] = [];
   if (!base) {
     warnings.push(
-      'No source URL supplied — linked stylesheets and @imports cannot be resolved. Fill in the profile URL (or keep the <link> tags) so the CSS chain is fetched 1:1.'
+      'No source URL supplied and the markup has no <link rel="canonical"> — linked stylesheets and @imports cannot be resolved. Load the saved page from the URL it was saved from (or fill in the profile URL) so the CSS chain is fetched 1:1.'
     );
   } else {
     const failed = stylesheets.filter((s) => !s.ok);
@@ -1574,7 +1580,7 @@ export async function importProfileFromHtml(
     rawHtml: serializeDoc(doc, rawCss),
     rawCss,
     scriptsRemoved,
-    sourceUrl: sourceUrl || '(pasted HTML)',
+    sourceUrl: base || '(pasted HTML)',
     diagnostics: {
       stylesheetsFound: stylesheets.length,
       stylesheetsFetched: stylesheets.filter((s) => s.ok).length,

@@ -328,7 +328,25 @@ absolutization and `@import` inlining.
   bytes / fetched-vs-blocked), the inlined byte count, and whether the
   background was verified in the rendered page.
 
-### 9.4 Verification
+### 9.4 Importing profiles that need a session (Gaia itself)
+
+Public CORS proxies only see the logged-out page, so `gaiaonline.com` profiles
+come back as 401/403. The import modal therefore supports the user's own
+browser as the source:
+
+* **Load saved page** — a file picker plus drag-and-drop on the markup box
+  accepts the page saved with Ctrl/⌘+S (or View Source → save). `.html`, `.htm`,
+  `.xhtml` and `.txt` are accepted; no clipboard round-trip, no truncation.
+* **`src/utils/importFile.ts`** — `readTextFile` (FileReader fallback) and
+  `extractCanonicalUrl`, which reads `<link rel="canonical">` / `og:url` from the
+  saved markup. `importProfileFromHtml` uses that URL as its base when no source
+  URL was typed, so a dropped file resolves its whole CSS chain and relative
+  images by itself. `formatBytes` feeds the status line.
+* The URL tab explains the three steps when a fetch fails (open logged in → save
+  → load the file) and carries the attempted URL over to the HTML tab as the
+  base URL.
+
+### 9.5 Verification
 
 * `npm run verify:ui` (`scripts/verify/ui-smoke.tsx` + `run-ui-smoke.mjs`) — jsdom
   walk of the session: welcome screen, blank New Profile, dock collapsed/rail
@@ -336,7 +354,7 @@ absolutization and `@import` inlining.
   categories and morph/3D presets, HTML import with a stubbed CSS chain (report
   lists the chain, shadow canvas keeps a real `<html>/<body>`, imported CSS is
   verbatim except `:root` → `html`, multi-layer background preserved, `url()`
-  absolutized), closing every tab.**31/31.**
+  absolutized), canonical-URL/file loading, closing every tab.**38/38.**
   Needs the check-only deps: `npm i --no-save --no-audit --no-fund esbuild jsdom`.
 * `npm run verify:fidelity` (`scripts/verify/background-fidelity.mjs`) — real-Chromium, end-to-end: serves
   `scripts/verify/fixture-server.mjs` (a Gaia-like profile with a linked theme

@@ -89,7 +89,9 @@ const PROFILE_HTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <title>Smoke Fixture</title>
+<link rel="canonical" href="https://example.invalid/profile.html">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/animate.css@4/animate.css">
+<link rel="stylesheet" href="/css/theme.css">
 <style>
 @import url("https://example.invalid/css/profile.css");
 :root { --smoke: 1; }
@@ -111,6 +113,8 @@ const CSS_BY_URL: Record<string, string> = {
     '@keyframes fadeInUp { from { opacity: 0 } to { opacity: 1 } }\n.fadeInUp { animation-name: fadeInUp; }\n',
   'https://example.invalid/css/profile.css':
     '.imported-marker { color: #14e07f; }\n#id_details .postcontent { letter-spacing: 0.02em; }\n',
+  'https://example.invalid/css/theme.css':
+    '#columns { width: 1000px; }\n.panel h2 { background-color: #16204a; }\n',
 };
 
 g.fetch = (async (input: RequestInfo | URL) => {
@@ -204,6 +208,26 @@ async function type(
   return true;
 }
 
+/* ---------------------- file / canonical-url helpers ---------------------- */
+const { readTextFile, extractCanonicalUrl, formatBytes } = await import('@/utils/importFile');
+{
+  const file = new window.File([PROFILE_HTML], 'lonely83.html', { type: 'text/html' });
+  const text = await readTextFile(file);
+  check('saved page file can be read back', text === PROFILE_HTML, `${formatBytes(text.length)}`);
+  check(
+    'canonical URL is detected in saved markup',
+    extractCanonicalUrl(text) === 'https://example.invalid/profile.html',
+    extractCanonicalUrl(text) || 'null'
+  );
+  const noCanonical = extractCanonicalUrl('<html><body>nothing here</body></html>');
+  check('markup without a canonical URL reports none', noCanonical === null);
+  check(
+    'og:url is accepted as a fallback',
+    extractCanonicalUrl('<meta property="og:url" content="https://www.gaiaonline.com/profiles/lonely83/1215288/">') ===
+      'https://www.gaiaonline.com/profiles/lonely83/1215288/'
+  );
+}
+
 /* ---------------------------------- run ----------------------------------- */
 await act(async () => {
   root.render(<App />);
@@ -283,12 +307,36 @@ await click(buttonByText(/Import Profile/i) || buttonByText(/^Import$/, true), '
 await settle(60);
 check('import modal opens', /Import from URL|Import with HTML/.test(text()));
 
-// Paste HTML + source URL (the offline-safe path).
+// The file path: drop the saved page in and let the canonical URL provide the
+// base — no typing, and it works for profiles behind a login.
 await click(buttonByText(/Import with HTML/i), 'Import with HTML tab');
-const urlInput = window.document.querySelector('input[placeholder*="example.com"]') as HTMLInputElement | null;
-await type(urlInput, 'https://example.invalid/profile.html', 'source URL');
+const fileInput = window.document.querySelector('input[type="file"]') as HTMLInputElement | null;
+check('import modal offers a saved-page file picker', !!fileInput, fileInput?.getAttribute('accept') || '');
+const dropZone = window.document.querySelector('textarea')?.parentElement;
+if (fileInput && dropZone) {
+  await act(async () => {
+    dropZone.dispatchEvent(
+      new window.Event('dragover', { bubbles: true, cancelable: true })
+    );
+    const file = new window.File([PROFILE_HTML], 'lonely83-profile.html', { type: 'text/html' });
+    const drop = new window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [file] } });
+    dropZone.dispatchEvent(drop);
+  });
+  await settle(200);
+}
 const textarea = window.document.querySelector('textarea') as HTMLTextAreaElement | null;
-await type(textarea, PROFILE_HTML, 'profile markup');
+check(
+  'dropped file fills the markup box',
+  /id="columns"/.test(textarea?.value || ''),
+  `${(textarea?.value || '').length} chars`
+);
+const baseInput = window.document.querySelector('input[placeholder*="example.com"]') as HTMLInputElement | null;
+check(
+  'canonical URL is used as the base automatically',
+  (baseInput?.value || '') === 'https://example.invalid/profile.html',
+  baseInput?.value || '(empty)'
+);
 await click(buttonByText(/^Parse HTML$/i), 'submit import');
 await settle(1500);
 
