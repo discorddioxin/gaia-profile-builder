@@ -181,8 +181,27 @@ reverses this and re-inserts the node into the column nearest its horizontal
 center. Both the `data-bb-absolute` marker and every other editor attribute are
 stripped by the export path — only the positioning declarations survive.
 
-**Verification**: `.tmp/effects-smoke.tsx` (jsdom, built with
-`./node_modules/.bin/esbuild … --external:jsdom`, then `node .tmp/effects-smoke.mjs`)
-covers clip/mask/animation round-tripping, hover-rule + keyframe emission,
-absolute/flow transitions, editor-marker stripping on export and the render of
-every new panel: 26/26 checks pass.
+### Where the controls live
+- **Mask & Clip** tab (`shape`): imported node → clipping, masking, generated
+  CSS and the positioning plane (Make Absolute / Return to Flow); authored
+  element → absolute-plane coordinates (X / Y / z-index / rotate), clipping and
+  masking.
+- **Animation Studio** tab: imported node → the full clip/mask/animation editors
+  run against the live node, with the exported rule + `@keyframes` previewed;
+  authored element → the normal animation editor.
+- **Props** tab: an *Effects & Plane* card jumps straight to either editor and
+  toggles the absolute plane, and a right-click on the node offers
+  *Make Absolute / Return to Flow* and *Clear Clip / Mask / Animation*.
+
+**Verification** (jsdom harnesses in `.tmp/`, built with
+`./node_modules/.bin/esbuild <file> --bundle --platform=node --format=esm --jsx=automatic --external:jsdom`,
+then run with `node`):
+- `effects-smoke` — clip/mask/animation round-tripping, hover-rule + keyframe
+  emission, absolute/flow transitions, editor-marker stripping on export and the
+  render of every new panel: **26/26**.
+- `tree-smoke` — tree parsing, initial expansion, structure-only mode, expand
+  all, row selection: **14/14**.
+- `dock-smoke` — imported-node shape / animation / properties tab wiring:
+  **6/6**.
+- `app-smoke` — full app boots in StrictMode with no React errors and the Gaia
+  palette offers all 15 component kinds: **7/7**.
