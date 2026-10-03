@@ -25,6 +25,7 @@ import { ImportedCanvas } from './components/ImportedCanvas';
 import {
   EditableImportedCanvas,
   EditableImportedCanvasApi,
+  ImportedNodeEffects,
   ImportedNodeInfo,
   ImportedTreeNode,
 } from './components/EditableImportedCanvas';
@@ -135,8 +136,25 @@ export const App: React.FC = () => {
   const [importedMultiSelectCount, setImportedMultiSelectCount] = useState(0);
   const [importedTree, setImportedTree] = useState<ImportedTreeNode[]>([]);
   const [importedSelectionMode, setImportedSelectionMode] = useState<'component' | 'deep'>('component');
+  const [importedEffects, setImportedEffects] = useState<ImportedNodeEffects | null>(null);
   const [draftImportedSize, setDraftImportedSize] = useState<{ width: number; height: number } | null>(null);
   const importedCanvasRef = useRef<EditableImportedCanvasApi | null>(null);
+
+  // Keep the clip / mask / animation editors in sync with the live node.
+  const refreshImportedEffectsRef = useRef<() => void>(() => {});
+  const refreshImportedEffects = useCallback(() => {
+    if (!importedNode?.bbId) {
+      setImportedEffects(null);
+      return;
+    }
+    setImportedEffects(importedCanvasRef.current?.computeEffects(importedNode.bbId) || null);
+  }, [importedNode?.bbId]);
+
+  refreshImportedEffectsRef.current = refreshImportedEffects;
+
+  useEffect(() => {
+    refreshImportedEffects();
+  }, [refreshImportedEffects, activeProfileId, activeProfile.renderMode, activeProfile.rawHtml?.length]);
 
   // Custom drag-n-drop library persisted in localStorage (shared across tabs)
   const [customComponents, setCustomComponents] = useState<CustomComponent[]>(() => {
@@ -613,6 +631,9 @@ export const App: React.FC = () => {
   const handleImportedCommit = useCallback(
     (newHtml: string) => {
       updateActiveProfile((p) => ({ ...p, rawHtml: newHtml }));
+      // The mutation may have touched clip / mask / animation, so re-read the
+      // selected node's computed effects once the shadow DOM has settled.
+      window.setTimeout(() => refreshImportedEffectsRef.current(), 0);
     },
     [updateActiveProfile]
   );
@@ -872,6 +893,25 @@ export const App: React.FC = () => {
                 }}
                 importedMultiSelectCount={importedMultiSelectCount}
                 importedTree={importedTree}
+                importedEffects={importedEffects}
+                importedEffectsActions={
+                  activeProfile.isImported && activeProfile.renderMode === 'canvas'
+                    ? {
+                        applyEffects: (bbId, patch) => {
+                          importedCanvasRef.current?.applyEffects(bbId, patch);
+                          window.setTimeout(refreshImportedEffects, 0);
+                        },
+                        makeAbsolute: (bbId) => {
+                          importedCanvasRef.current?.makeAbsolute(bbId);
+                          window.setTimeout(refreshImportedEffects, 0);
+                        },
+                        makeFlow: (bbId) => {
+                          importedCanvasRef.current?.makeFlow(bbId);
+                          window.setTimeout(refreshImportedEffects, 0);
+                        },
+                      }
+                    : undefined
+                }
                 importedNodeActions={
                   activeProfile.isImported && activeProfile.renderMode === 'canvas'
                     ? {

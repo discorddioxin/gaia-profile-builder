@@ -27,6 +27,7 @@ import {
   Gift,
   BookOpen,
   Users,
+  Move,
 } from 'lucide-react';
 import {
   ProfileElement,
@@ -42,10 +43,13 @@ import { MaskEditor } from './MaskEditor';
 import { AnimationEditor } from './AnimationEditor';
 import {
   ImportedDedicatedComponentKind,
+  ImportedEffectsPatch,
+  ImportedNodeEffects,
   ImportedNodeInfo,
   ImportedTreeNode,
 } from './EditableImportedCanvas';
 import { ImportedNodePropertiesPanel } from './ImportedNodePropertiesPanel';
+import { ImportedEffectsPanel } from './ImportedEffectsPanel';
 import { ImportedHierarchyTree } from './ImportedHierarchyTree';
 import {
   GAIA_CATEGORIES,
@@ -93,6 +97,13 @@ interface DockPanelProps {
   onInspectImportedNode?: (bbId: string | null) => void;
   importedMultiSelectCount?: number;
   importedTree?: ImportedTreeNode[];
+  /** Clip / mask / animation state for the selected imported node. */
+  importedEffects?: ImportedNodeEffects | null;
+  importedEffectsActions?: {
+    applyEffects: (bbId: string, patch: ImportedEffectsPatch) => void;
+    makeAbsolute: (bbId: string) => void;
+    makeFlow: (bbId: string) => void;
+  };
   importedNodeActions?: {
     selectNode: (bbId: string) => void;
     editNodeText: (bbId: string) => void;
@@ -155,6 +166,8 @@ export const DockPanel: React.FC<DockPanelProps> = ({
   importedMultiSelectCount = 0,
   importedTree = [],
   importedNodeActions,
+  importedEffects = null,
+  importedEffectsActions,
 }) => {
   const [importedPropertiesTab, setImportedPropertiesTab] = React.useState<'global' | 'local'>('local');
 
@@ -581,6 +594,22 @@ export const DockPanel: React.FC<DockPanelProps> = ({
                           onDeleteFootprint={importedNodeActions.deleteFootprint}
                           onAddBadge={importedNodeActions.addBadge}
                           onDeleteBadge={importedNodeActions.deleteBadge}
+                          onOpenTab={(tab) => onSelectTab(tab)}
+                          onMakeAbsolute={importedEffectsActions?.makeAbsolute}
+                          onMakeFlow={importedEffectsActions?.makeFlow}
+                          isAbsolute={importedEffects?.isAbsolute ?? false}
+                          hasEffects={!!(importedEffects?.clipPath || importedEffects?.maskImage || importedEffects?.animation)}
+                          onClearEffects={
+                            importedEffectsActions
+                              ? (bbId) =>
+                                  importedEffectsActions.applyEffects(bbId, {
+                                    clipPath: null,
+                                    maskImage: null,
+                                    animation: null,
+                                    hoverAnimation: null,
+                                  })
+                              : undefined
+                          }
                         />
                       )}
                     </div>
@@ -738,9 +767,57 @@ export const DockPanel: React.FC<DockPanelProps> = ({
                 </>
               )}
 
+              {activeTab === 'shape' && !selectedElement && importedNode && importedEffectsActions && (
+                <>
+                  <ImportedEffectsPanel
+                    node={importedNode}
+                    effects={importedEffects}
+                    section="shape"
+                    multiSelectCount={importedMultiSelectCount}
+                    onApplyEffects={importedEffectsActions.applyEffects}
+                    onMakeAbsolute={importedEffectsActions.makeAbsolute}
+                    onMakeFlow={importedEffectsActions.makeFlow}
+                  />
+                  <ImportedEffectsPanel
+                    node={importedNode}
+                    effects={importedEffects}
+                    section="position"
+                    multiSelectCount={importedMultiSelectCount}
+                    onApplyEffects={importedEffectsActions.applyEffects}
+                    onMakeAbsolute={importedEffectsActions.makeAbsolute}
+                    onMakeFlow={importedEffectsActions.makeFlow}
+                  />
+                </>
+              )}
+
+              {activeTab === 'shape' && !(!selectedElement && importedNode && importedEffectsActions) && !selectedElement && (
+                <EmptyHint text="Select a component to edit clipping, masking and its positioning plane." />
+              )}
+
               {activeTab === 'shape' && (
                 selectedElement ? (
                   <div className="space-y-4">
+                    <div className="border border-slate-800 bg-slate-950 p-3 space-y-2">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
+                        <Move className="h-3.5 w-3.5 text-emerald-400" />
+                        Absolute Plane
+                        <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 font-mono text-[9px] text-emerald-200">
+                          position: absolute
+                        </span>
+                      </div>
+                      <p className="text-[10px] leading-relaxed text-slate-400">
+                        This element is positioned on the absolute plane of its Gaia custom panel —
+                        left/top come from X/Y and the exported CSS pins it with{' '}
+                        <span className="font-mono text-slate-300">position: absolute</span> inside{' '}
+                        <span className="font-mono text-slate-300">#id_custom_N_content</span>.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {numberField('Absolute X', selectedElement.x, (v) => onUpdateElement({ x: v }))}
+                        {numberField('Absolute Y', selectedElement.y, (v) => onUpdateElement({ y: v }))}
+                        {numberField('Z-Index', selectedElement.zIndex, (v) => onUpdateElement({ zIndex: v }))}
+                        {numberField('Rotate°', selectedElement.rotate, (v) => onUpdateElement({ rotate: v }))}
+                      </div>
+                    </div>
                     <div className="border border-slate-800 bg-slate-950 p-3">
                       <div className="text-[11px] font-semibold text-slate-200 mb-2">Clipping</div>
                       <ClipEditor element={selectedElement} onUpdateClip={(clip: ClipConfig) => onUpdateElement({ clip })} />
@@ -755,8 +832,22 @@ export const DockPanel: React.FC<DockPanelProps> = ({
                 )
               )}
 
+              {activeTab === 'animation' && !selectedElement && importedNode && importedEffectsActions && (
+                <ImportedEffectsPanel
+                  node={importedNode}
+                  effects={importedEffects}
+                  section="animation"
+                  multiSelectCount={importedMultiSelectCount}
+                  onApplyEffects={importedEffectsActions.applyEffects}
+                  onMakeAbsolute={importedEffectsActions.makeAbsolute}
+                  onMakeFlow={importedEffectsActions.makeFlow}
+                />
+              )}
+
               {activeTab === 'animation' && (
-                selectedElement ? <AnimationEditor element={selectedElement} onUpdateAnimation={(animation: AnimationConfig) => onUpdateElement({ animation })} /> : <EmptyHint text="Select an element to edit animations." />
+                selectedElement
+                  ? <AnimationEditor element={selectedElement} onUpdateAnimation={(animation: AnimationConfig) => onUpdateElement({ animation })} />
+                  : (!importedEffectsActions || !importedNode) && <EmptyHint text="Select an element to edit animations." />
               )}
 
               {activeTab === 'custom' && (

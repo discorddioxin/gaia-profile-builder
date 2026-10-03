@@ -137,3 +137,52 @@ frame while a node was selected:
 - `App` passes stable `onCommit` / `onSelectNode` / `onSwitchToRaw` callbacks:
   inline lambdas changed identity every render and re-ran the canvas' listener
   effects (and its DOM observers) constantly.
+
+## 7. View Code tree, imported-node effects and the absolute plane
+
+### HTML tree view (View Code)
+The HTML tab is a collapsible tree by default (`src/components/HtmlTreeView.tsx`),
+built with `DOMParser` from the generated document: the `#columns` /
+`#column_1..3` layout is expanded first (depth 3), children page in groups of
+200, and rendering stops at 3000 nodes so a scraped Gaia page cannot lock the
+modal. Row click highlights the matching `#id_*` selector; "structure only"
+hides text nodes, and a Tree / Source toggle keeps the raw markup one click
+away. The tree is presentation only — it never rewrites the generated code.
+
+### Clip / mask / animation on imported components
+Imported nodes are real scraped DOM, not builder elements, so their effects are
+written as CSS instead of config:
+
+- **Clip / Mask** — the selected imported node is adapted into the same
+  `ClipConfig` / `MaskConfig` shapes the builder already uses, then
+  `clip-path`, `mask-image` and `-webkit-mask-image` are written as inline
+  styles through `applyEffects` (undefined patch keys are left untouched, `null`
+  clears). Values are re-parsed back from the live node, so re-opening the panel
+  shows the current state.
+- **Animation** — `animation` is applied inline; on the `hover` trigger the rule
+  is emitted into the exported `<style id="bb-effects">` block as
+  `/* fx:<selector> */ #id .panel:hover { … } /* /fx */`, because a hover state
+  cannot be expressed inline. Missing `@keyframes` are pulled from
+  `getAnimationKeyframes()` in `src/utils/bbcodeTranspiler.ts`, so the exported
+  document is self-contained.
+- The effects stylesheet is marked as a head node (`HEAD_NODE_MARK`), so the
+  normal export path keeps it inside `<head>` and the raw-HTML document stays
+  copy/paste ready.
+
+### Absolute plane
+`makeAbsolute(bbId)` detaches a component from the column flow: it measures the
+node against its nearest positioned ancestor (`findContainingBlock`), writes
+`position: absolute`, `left`, `top`, `width`, `height`, `box-sizing` and a
+`z-index`, and tags the node with the editor-only `data-bb-absolute` attribute
+(green dashed outline). Dragging an absolute node moves it by updating its
+inline `left` / `top` instead of re-parenting it into a column, so it can sit
+anywhere over the profile while staying inside its Gaia column. `makeFlow(bbId)`
+reverses this and re-inserts the node into the column nearest its horizontal
+center. Both the `data-bb-absolute` marker and every other editor attribute are
+stripped by the export path — only the positioning declarations survive.
+
+**Verification**: `.tmp/effects-smoke.tsx` (jsdom, built with
+`./node_modules/.bin/esbuild … --external:jsdom`, then `node .tmp/effects-smoke.mjs`)
+covers clip/mask/animation round-tripping, hover-rule + keyframe emission,
+absolute/flow transitions, editor-marker stripping on export and the render of
+every new panel: 26/26 checks pass.

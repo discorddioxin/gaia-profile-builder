@@ -19,8 +19,10 @@ import {
   EyeOff,
   Move,
   Layers,
+  Eraser,
 } from 'lucide-react';
 import { CanvasSettings, Profile } from '../types/profile';
+import { getAnimationKeyframes } from '../utils/bbcodeTranspiler';
 
 /**
  * Public info about the currently selected imported node.
@@ -180,6 +182,31 @@ export type ImportedSemanticRole =
   | 'custom-content'
   | 'generic';
 
+/**
+ * Effects authored by the builder on an imported node. Everything is exposed as
+ * plain CSS strings so the values can be written straight to the element and
+ * exported with the profile.
+ */
+export interface ImportedNodeEffects {
+  clipPath: string;
+  maskImage: string;
+  webkitMaskImage: string;
+  animation: string;
+  animationName: string;
+  animationTrigger: 'always' | 'hover';
+  position: string;
+  isAbsolute: boolean;
+  offsetParentId: string;
+}
+
+export interface ImportedEffectsPatch {
+  clipPath?: string | null;
+  maskImage?: string | null;
+  animation?: string | null;
+  /** `null` clears the hover rule; a string installs `.bbfx-N:hover { … }`. */
+  hoverAnimation?: string | null;
+}
+
 export type ImportedDedicatedComponentKind =
   | 'details'
   | 'equipment'
@@ -226,6 +253,15 @@ export interface EditableImportedCanvasApi {
   addBadge(bbId?: string): void;
   deleteBadge(bbId: string): void;
   updateStyle(bbId: string, styleAttr: string): void;
+  /** Computed clip / mask / animation state for the effects editors. */
+  computeEffects(bbId: string): ImportedNodeEffects | null;
+  /** Apply clip / mask / animation to a node (undefined patch keys are left alone). */
+  applyEffects(bbId: string, patch: ImportedEffectsPatch): void;
+  /** Detach the node from column flow and position it absolutely. */
+  makeAbsolute(bbId: string): void;
+  /** Return the node to normal column flow. */
+  makeFlow(bbId: string): void;
+  isAbsolute(bbId: string): boolean;
   applyStyleToChildren(bbId: string, selector: string, styleAttr: string): number;
   updateText(bbId: string, text: string): void;
   updateClassName(bbId: string, className: string): void;
@@ -291,6 +327,11 @@ const EDITOR_CSS = `
     outline: 2px dashed #22c55e !important;
     cursor: grabbing !important;
   }
+  /* Nodes detached onto the absolute plane get a persistent green hint. */
+  *[data-bb-absolute]:not([data-bb-selected]):not([data-bb-moving]) {
+    outline: 1px dashed rgba(34, 197, 94, 0.55) !important;
+    outline-offset: 1px;
+  }
   a[data-bb-id] {
     /* Prevent link nav on click */
     pointer-events: auto;
@@ -331,6 +372,63 @@ function sameRect(a: Rect | null, b: Rect | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Effects helpers                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** `@keyframes name { … }` extracted from the shared preset keyframes. */
+/** Extract `@keyframes <name> { … }` from the shared preset keyframes. */
+function keyframesFor(name: string): string {
+  if (!name || name === 'none') return '';
+  const all = getAnimationKeyframes();
+  const start = all.indexOf(`@keyframes ${name}`);
+  if (start === -1) return '';
+  const open = all.indexOf('{', start);
+  if (open === -1) return '';
+  let depth = 0;
+  for (let i = open; i < all.length; i += 1) {
+    if (all[i] === '{') depth += 1;
+    else if (all[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return all.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+
+function hasKeyframes(css: string, name: string): boolean {
+  if (!name || name === 'none') return false;
+  return css.indexOf(`@keyframes ${name}`) !== -1;
+}
+
+/** Remove a generated `/* fx:selector *​/ … /* /fx *​/` block (plain string scan). */
+function removeFxBlock(css: string, selector: string): string {
+  const marker = `/* fx:${selector} */`;
+  const start = css.indexOf(marker);
+  if (start === -1) return css;
+  const endMarker = '/* /fx */';
+  const end = css.indexOf(endMarker, start);
+  if (end === -1) return css.slice(0, start).trimEnd();
+  const joined = css.slice(0, start) + css.slice(end + endMarker.length);
+  return joined.replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+/** Nearest positioned ancestor (the containing block for `position: absolute`). */
+function findContainingBlock(el: HTMLElement): HTMLElement {
+  let node: HTMLElement | null = el.parentElement;
+  while (node) {
+    if (window.getComputedStyle(node).position !== 'static') return node;
+    node = node.parentElement;
+  }
+  const root = el.getRootNode();
+  const host = (root as ShadowRoot).host;
+  return (host as HTMLElement) || document.body;
+}
+
+function isAbsoluteElement(el: HTMLElement): boolean {
+  return window.getComputedStyle(el).position === 'absolute' || window.getComputedStyle(el).position === 'fixed';
 }
 
 /**
@@ -413,6 +511,7 @@ export const EditableImportedCanvas = forwardRef<
   const isMountedRef = useRef(true);
   const resyncTimersRef = useRef<number[]>([]);
   const debounceTimerRef = useRef<number | null>(null);
+  const fxCounterRef = useRef(1);
 
   const [selectedBbId, setSelectedBbId] = useState<string | null>(null);
   // Extra bbIds added by Shift+Click. Primary selection stays in selectedBbId.
@@ -1034,6 +1133,186 @@ export const EditableImportedCanvas = forwardRef<
     return { dt, dd };
   };
 
+  /* ---------------------------------------------------------------------- */
+  /* Effects (clip / mask / animation) + absolute plane                      */
+  /* ---------------------------------------------------------------------- */
+
+  const EFFECTS_STYLE_ID = 'bb-effects';
+  const effectsCssRef = useRef<string>('');
+
+  /** Write pending keyframes/hover rules into the shadow root (exported in <head>). */
+  const syncEffectsStyle = () => {
+    const shadow = shadowRef.current;
+    if (!shadow) return;
+    let styleEl = shadow.querySelector(`#${EFFECTS_STYLE_ID}`) as HTMLStyleElement | null;
+    if (!effectsCssRef.current.trim()) {
+      styleEl?.remove();
+      return;
+    }
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = EFFECTS_STYLE_ID;
+      // Marked as a head node so serialization keeps it in the exported <head>.
+      styleEl.setAttribute(HEAD_NODE_MARK, '');
+      const editorStyle = shadow.querySelector(`[${EDITOR_STYLE_MARK}]`);
+      if (editorStyle) shadow.insertBefore(styleEl, editorStyle);
+      else shadow.appendChild(styleEl);
+    }
+    styleEl.textContent = effectsCssRef.current;
+  };
+
+  /** Stable selector for the CSS rules we generate (id first, then a fx class). */
+  const selectorForFx = (el: HTMLElement): string => {
+    if (el.id) return `#${el.id}`;
+    const existing = Array.from(el.classList).find((c) => c.startsWith('bbfx-'));
+    if (existing) return `.${existing}`;
+    const generated = `bbfx-${fxCounterRef.current++}`;
+    el.classList.add(generated);
+    return `.${generated}`;
+  };
+
+  /** Replace (or clear) the hover rule for a node inside the effects stylesheet. */
+  const animationNameFor = (el: HTMLElement, declaration?: string | null): string => {
+    if (declaration) {
+      const match = declaration.match(/animation(?:-name)?\s*:\s*([A-Za-z0-9_-]+)/i);
+      if (match) return match[1];
+    }
+    return el.style.animationName || '';
+  };
+
+  const setHoverRule = (el: HTMLElement, declaration: string | null) => {
+    const selector = selectorForFx(el);
+    const withoutBlock = removeFxBlock(effectsCssRef.current, selector);
+    if (!declaration) {
+      effectsCssRef.current = withoutBlock;
+      return;
+    }
+    const pendingName = animationNameFor(el, declaration);
+    const keyframes = pendingName && !hasKeyframes(withoutBlock, pendingName)
+      ? `${keyframesFor(pendingName)}\n`
+      : '';
+    effectsCssRef.current =
+      `${withoutBlock}${withoutBlock ? '\n\n' : ''}/* fx:${selector} */\n${keyframes}${selector}:hover {\n  ${declaration}\n}\n/* /fx */`;
+  };
+
+  const computeEffects = (bbId: string): ImportedNodeEffects | null => {
+    const el = findElementByBbId(bbId);
+    if (!el) return null;
+    const computed = window.getComputedStyle(el);
+    const inlineAnimation = (el.style.animation || el.style.animationName || '').trim();
+    const computedAnimation = computed.animationName && computed.animationName !== 'none'
+      ? `${computed.animationName} ${computed.animationDuration} ${computed.animationTimingFunction} ${computed.animationDelay} ${computed.animationIterationCount} ${computed.animationDirection}`.trim()
+      : '';
+    const animation = inlineAnimation || computedAnimation;
+    const fxSelectors = [el.id ? `#${el.id}` : '', ...Array.from(el.classList).map((c) => `.${c}`)].filter(
+      Boolean
+    );
+    const hoverRule = fxSelectors.some((sel) => effectsCssRef.current.indexOf(`/* fx:${sel} */`) !== -1);
+    return {
+      clipPath: el.style.clipPath || (computed.clipPath === 'none' ? '' : computed.clipPath),
+      maskImage: el.style.maskImage || el.style.getPropertyValue('mask-image') || '',
+      webkitMaskImage:
+        el.style.getPropertyValue('-webkit-mask-image') || computed.getPropertyValue('-webkit-mask-image') || '',
+      animation,
+      animationName: animation ? animationNameFor(el) : '',
+      animationTrigger: hoverRule ? 'hover' : 'always',
+      position: computed.position,
+      isAbsolute: computed.position === 'absolute',
+      offsetParentId: (el.offsetParent as HTMLElement | null)?.id || '',
+    };
+  };
+
+  const applyEffects = (bbId: string, patch: ImportedEffectsPatch) => {
+    const el = findElementByBbId(bbId);
+    if (!el) return;
+
+    const set = (prop: string, value: string | null | undefined) => {
+      if (value === undefined) return; // untouched
+      if (value === null || value === '' || value === 'none') el.style.removeProperty(prop);
+      else el.style.setProperty(prop, value);
+    };
+
+    set('clip-path', patch.clipPath);
+    if (patch.maskImage !== undefined) {
+      set('mask-image', patch.maskImage);
+      set('-webkit-mask-image', patch.maskImage);
+    }
+    if (patch.animation !== undefined) {
+      set('animation', patch.animation);
+      if (patch.animation) {
+        const name = patch.animation.trim().split(/\s+/)[0];
+        if (!hasKeyframes(effectsCssRef.current, name)) {
+          effectsCssRef.current = `${effectsCssRef.current}${effectsCssRef.current ? '\n\n' : ''}${keyframesFor(name)}`;
+        }
+      }
+    }
+    if (patch.hoverAnimation !== undefined) {
+      setHoverRule(el, patch.hoverAnimation);
+    }
+    if (patch.animation !== undefined || patch.hoverAnimation !== undefined) {
+      el.setAttribute('data-bb-builder-local', '');
+    }
+
+    syncEffectsStyle();
+    commitToProfile();
+    refreshAfterMutation(bbId);
+  };
+
+  const makeAbsolute = (bbId: string) => {
+    const el = findElementByBbId(bbId);
+    if (!el) return;
+    if (window.getComputedStyle(el).position === 'absolute') return;
+
+    // Containing block for the absolute plane: the profile surface the element
+    // already lives in (#columns when nothing closer is positioned).
+    const containingBlock = findContainingBlock(el);
+    const cbRect = containingBlock.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+
+    el.setAttribute('data-bb-absolute', '');
+    el.style.position = 'absolute';
+    el.style.left = `${Math.round(rect.left - cbRect.left + containingBlock.scrollLeft)}px`;
+    el.style.top = `${Math.round(rect.top - cbRect.top + containingBlock.scrollTop)}px`;
+    if (!el.style.width) el.style.width = `${Math.round(rect.width)}px`;
+    if (!el.style.height && el.offsetHeight > 0) el.style.height = `${Math.round(rect.height)}px`;
+    el.style.boxSizing = 'border-box';
+    const computedZ = window.getComputedStyle(el).zIndex;
+    if (computedZ === 'auto') el.style.zIndex = String(100 + selectedBbIds.size);
+    el.setAttribute('data-bb-builder-local', '');
+
+    commitToProfile();
+    refreshAfterMutation(bbId);
+  };
+
+  const makeFlow = (bbId: string) => {
+    const el = findElementByBbId(bbId);
+    if (!el) return;
+
+    el.removeAttribute('data-bb-absolute');
+    ['position', 'left', 'top', 'width', 'height', 'box-sizing'].forEach((prop) =>
+      el.style.removeProperty(prop)
+    );
+    el.removeAttribute('data-bb-builder-local');
+
+    // Put it back in the column that matches its horizontal position.
+    const columns = getV2Columns();
+    if (columns.length === 3) {
+      const rect = el.getBoundingClientRect();
+      const target = columns.reduce((nearest, col) => {
+        const nr = nearest.getBoundingClientRect();
+        const cr = col.getBoundingClientRect();
+        return Math.abs(rect.left + rect.width / 2 - (cr.left + cr.width / 2)) <
+          Math.abs(rect.left + rect.width / 2 - (nr.left + nr.width / 2))
+          ? col
+          : nearest;
+      }, columns[0]);
+      if (el.parentElement !== target) target.appendChild(el);
+    }
+
+    commitToProfile();
+    refreshAfterMutation(bbId);
+  };
+
   const nodeInfoFromElement = (el: HTMLElement): ImportedNodeInfo => {
     const hasElementChildren = Array.from(el.children).length > 0;
     const semanticRole = getSemanticRole(el);
@@ -1338,6 +1617,9 @@ export const EditableImportedCanvas = forwardRef<
       root.removeAttribute('data-bb-selected');
       root.removeAttribute('data-bb-editing');
       root.removeAttribute('data-bb-moving');
+      // Editor-only plane marker; the absolute positioning itself lives in the
+      // element's inline style (and `bbfx-*` classes stay: exported CSS uses them).
+      root.removeAttribute('data-bb-absolute');
       root.removeAttribute('data-bb-builder-local');
       root.removeAttribute('data-bb-builder-group');
       root.removeAttribute('data-bb-builder-global');
@@ -1347,6 +1629,7 @@ export const EditableImportedCanvas = forwardRef<
       root.querySelectorAll('[data-bb-selected]').forEach((n) => n.removeAttribute('data-bb-selected'));
       root.querySelectorAll('[data-bb-editing]').forEach((n) => n.removeAttribute('data-bb-editing'));
       root.querySelectorAll('[data-bb-moving]').forEach((n) => n.removeAttribute('data-bb-moving'));
+      root.querySelectorAll('[data-bb-absolute]').forEach((n) => n.removeAttribute('data-bb-absolute'));
       root.querySelectorAll('[data-bb-builder-local]').forEach((n) => n.removeAttribute('data-bb-builder-local'));
       root.querySelectorAll('[data-bb-builder-group]').forEach((n) => n.removeAttribute('data-bb-builder-group'));
       root.querySelectorAll('[data-bb-builder-global]').forEach((n) => n.removeAttribute('data-bb-builder-global'));
@@ -1551,6 +1834,10 @@ export const EditableImportedCanvas = forwardRef<
     bodyShell.innerHTML = bodyContent;
     shadow.appendChild(bodyShell);
     ensureBbIds(bodyShell);
+
+    // Re-attach the effect CSS (keyframes / hover rules) — the rebuild cleared
+    // the shadow root, and these rules are referenced by exported markup.
+    syncEffectsStyle();
 
     lastCommittedHtml.current = rawHtml;
     lastTreeSignature.current = '';
@@ -1797,7 +2084,13 @@ export const EditableImportedCanvas = forwardRef<
       moveAction.hasMovedPastThreshold = true;
       el.setAttribute('data-bb-moving', '');
       window.getSelection()?.removeAllRanges();
-      relocateComponentByPointer(moveAction.bbId, e.clientX, e.clientY);
+      if (isAbsoluteElement(el)) {
+        // On the absolute plane the component is dragged freely (page coords).
+        el.style.left = `${Math.round(moveAction.originalLeft + dx)}px`;
+        el.style.top = `${Math.round(moveAction.originalTop + dy)}px`;
+      } else {
+        relocateComponentByPointer(moveAction.bbId, e.clientX, e.clientY);
+      }
       recomputeSelectionRect();
     };
 
@@ -2181,6 +2474,22 @@ export const EditableImportedCanvas = forwardRef<
         }
         commitToProfile();
         refreshAfterMutation(bbId);
+      },
+      computeEffects(bbId: string) {
+        return computeEffects(bbId);
+      },
+      applyEffects(bbId: string, patch: ImportedEffectsPatch) {
+        applyEffects(bbId, patch);
+      },
+      makeAbsolute(bbId: string) {
+        makeAbsolute(bbId);
+      },
+      makeFlow(bbId: string) {
+        makeFlow(bbId);
+      },
+      isAbsolute(bbId: string) {
+        const el = findElementByBbId(bbId);
+        return el ? isAbsoluteElement(el) : false;
       },
       applyStyleToChildren(bbId: string, selector: string, styleAttr: string) {
         const el = findElementByBbId(bbId);
@@ -2859,6 +3168,38 @@ export const EditableImportedCanvas = forwardRef<
               />
             )}
 
+            <ContextButton
+              label={
+                findElementByBbId(contextMenu.bbId)?.hasAttribute('data-bb-absolute')
+                  ? 'Return to Flow'
+                  : 'Make Absolute'
+              }
+              icon={<Move className="w-3.5 h-3.5" />}
+              onClick={() => {
+                const el = findElementByBbId(contextMenu.bbId);
+                if (el?.hasAttribute('data-bb-absolute')) makeFlow(contextMenu.bbId);
+                else makeAbsolute(contextMenu.bbId);
+                onSelectNode(el ? nodeInfoFromElement(el) : null);
+                setContextMenu(null);
+              }}
+            />
+            <ContextButton
+              label="Clear Clip / Mask / Animation"
+              icon={<Eraser className="w-3.5 h-3.5" />}
+              onClick={() => {
+                applyEffects(contextMenu.bbId, {
+                  clipPath: null,
+                  maskImage: null,
+                  animation: null,
+                  hoverAnimation: null,
+                });
+                window.setTimeout(() => {
+                  const el = findElementByBbId(contextMenu.bbId);
+                  if (el) onSelectNode(nodeInfoFromElement(el));
+                }, 0);
+                setContextMenu(null);
+              }}
+            />
             <ContextButton
               label="Select Parent"
               icon={<ChevronUp className="w-3.5 h-3.5" />}

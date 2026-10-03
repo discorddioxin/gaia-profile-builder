@@ -10,11 +10,13 @@ import {
   MessageSquareQuote,
   Braces,
   Info,
+  Network,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { ProfileElement, CanvasSettings } from '../types/profile';
 import { transpileProfile } from '../utils/bbcodeTranspiler';
 import { detectGaiaComponentKind, extractColumnsHtml } from '../utils/gaiaSpec';
+import { HtmlTreeView } from './HtmlTreeView';
 
 interface TranspilerModalProps {
   elements: ProfileElement[];
@@ -35,6 +37,7 @@ export const TranspilerModal: React.FC<TranspilerModalProps> = ({
   onClose,
 }) => {
   const [activeTab, setActiveTab] = useState<CodeTab>('html');
+  const [htmlView, setHtmlView] = useState<'tree' | 'source'>('tree');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const output = useMemo(() => transpileProfile(elements, settings), [elements, settings]);
@@ -180,27 +183,63 @@ export const TranspilerModal: React.FC<TranspilerModalProps> = ({
 
     const text = tabContent[activeTab];
     const info = meta[activeTab];
+    const isHtmlTab = activeTab === 'html' || activeTab === 'document';
 
     return (
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-2 text-[11px] font-sans">
           <div className={`${info.tint} font-semibold`}>{info.title}</div>
-          <div className="text-slate-500">{text.length.toLocaleString()} chars</div>
+          <div className="flex items-center gap-2">
+            {isHtmlTab && (
+              <div className="flex rounded-md border border-slate-700 bg-slate-900 p-0.5">
+                <button
+                  onClick={() => setHtmlView('tree')}
+                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                    htmlView === 'tree' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Network className="h-3 w-3" />
+                  Tree
+                </button>
+                <button
+                  onClick={() => setHtmlView('source')}
+                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                    htmlView === 'source' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <FileText className="h-3 w-3" />
+                  Source
+                </button>
+              </div>
+            )}
+            <span className="text-slate-500">{text.length.toLocaleString()} chars</span>
+          </div>
         </div>
         <div className="text-[10px] font-sans text-slate-500">{info.hint}</div>
-        <pre
-          className={`p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 whitespace-pre-wrap leading-relaxed select-all overflow-x-auto text-[11px] sm:text-xs ${
-            activeTab === 'css'
-              ? 'text-indigo-200'
-              : activeTab === 'html'
-              ? 'text-amber-200'
-              : activeTab === 'bbcode'
-              ? 'text-pink-200'
-              : 'text-cyan-200'
-          }`}
-        >
-          {text || '/* nothing to export */'}
-        </pre>
+        {isHtmlTab && htmlView === 'tree' ? (
+          <HtmlTreeView
+            html={text}
+            hint={
+              activeTab === 'html'
+                ? 'Gaia V2 structure — #columns → #column_N → .panel'
+                : 'Imported document (scripts removed)'
+            }
+          />
+        ) : (
+          <pre
+            className={`p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 whitespace-pre-wrap leading-relaxed select-all overflow-x-auto text-[11px] sm:text-xs ${
+              activeTab === 'css'
+                ? 'text-indigo-200'
+                : activeTab === 'html'
+                ? 'text-amber-200'
+                : activeTab === 'bbcode'
+                ? 'text-pink-200'
+                : 'text-cyan-200'
+            }`}
+          >
+            {text || '/* nothing to export */'}
+          </pre>
+        )}
       </div>
     );
   };
