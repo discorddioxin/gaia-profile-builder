@@ -41,12 +41,42 @@ const appUrlArg = args.includes('--app') ? args[args.indexOf('--app') + 1] : nul
 const FIXTURE_PORT = 4599;
 const APP_PORT = 4178;
 
+/**
+ * Chromium needs a font configuration that actually resolves to installed
+ * fonts: with an empty font set, Skia aborts the renderer
+ * (`SkFontMgr_FontConfigInterface … Not implemented`) as soon as it measures
+ * text. `fonts/fonts.conf` shipped with @sparticuz/chromium points at
+ * /var/task/fonts and /tmp/fonts — this builds a local.conf for the unpacked
+ * directory and links it to /tmp/fonts so both paths work.
+ */
+const FONT_DIR = '/tmp/gchromium/fonts';
+const FONT_CONF = `${FONT_DIR}/local.conf`;
 const CHROME_ENV = {
   ...process.env,
-  LD_LIBRARY_PATH: '/tmp/gchromium/lib:/tmp/gchromium/fonts/lib',
-  FONTCONFIG_PATH: '/tmp/gchromium/fonts',
+  LD_LIBRARY_PATH: '/tmp/gchromium/lib',
+  FONTCONFIG_PATH: FONT_DIR,
+  FONTCONFIG_FILE: FONT_CONF,
   HOME: '/tmp',
 };
+
+function ensureFontConfig() {
+  fs.mkdirSync('/tmp/fonts-cache', { recursive: true });
+  const dirs = [`${FONT_DIR}/fonts`, '/usr/share/fonts', '/usr/local/share/fonts'].filter((dir) =>
+    fs.existsSync(dir)
+  );
+  fs.writeFileSync(
+    FONT_CONF,
+    `<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n` +
+      dirs.map((dir) => `  <dir>${dir}</dir>\n`).join('') +
+      `  <cachedir>/tmp/fonts-cache</cachedir>\n</fontconfig>\n`
+  );
+  try {
+    const link = '/tmp/fonts';
+    if (!fs.existsSync(link)) fs.symlinkSync(`${FONT_DIR}/fonts`, link);
+  } catch {
+    /* best effort — FONTCONFIG_FILE above is what matters */
+  }
+}
 
 /* ------------------------------- reporting ------------------------------- */
 const results = [];
@@ -202,6 +232,7 @@ async function waitForShadowCanvas(page, timeout = 30000) {
 
 /* ---------------------------------- main --------------------------------- */
 async function main() {
+  ensureFontConfig();
   const server = await startFixtureServer(FIXTURE_PORT);
   const fixtureUrl = `http://127.0.0.1:${FIXTURE_PORT}/profile.html`;
 

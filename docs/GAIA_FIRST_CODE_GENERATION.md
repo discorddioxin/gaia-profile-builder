@@ -330,7 +330,15 @@ absolutization and `@import` inlining.
 
 ### 9.4 Verification
 
-* `scripts/verify/background-fidelity.mjs` — real-Chromium, end-to-end: serves
+* `npm run verify:ui` (`scripts/verify/ui-smoke.tsx` + `run-ui-smoke.mjs`) — jsdom
+  walk of the session: welcome screen, blank New Profile, dock collapsed/rail
+  open/close/**select-to-open**, Profile Tools + *Add to builder*, Effect Library
+  categories and morph/3D presets, HTML import with a stubbed CSS chain (report
+  lists the chain, shadow canvas keeps a real `<html>/<body>`, imported CSS is
+  verbatim except `:root` → `html`, multi-layer background preserved, `url()`
+  absolutized), closing every tab.**31/31.**
+  Needs the check-only deps: `npm i --no-save --no-audit --no-fund esbuild jsdom`.
+* `npm run verify:fidelity` (`scripts/verify/background-fidelity.mjs`) — real-Chromium, end-to-end: serves
   `scripts/verify/fixture-server.mjs` (a Gaia-like profile with a linked theme
   sheet, an `animate.css`-style library, an `@import`-ed profile sheet, a
   CSS-defined `html` background image, an opaque `body` box and a second
@@ -338,11 +346,9 @@ absolutization and `@import` inlining.
   page against both render surfaces: computed `background-*` per element,
   `#columns`/column widths, library keyframes, `@import` results, and decoded
   screenshot pixels at matched points. **34/34.**
-  Requires `npm i --no-save puppeteer-core @sparticuz/chromium` and a Chromium
-  binary (`/tmp/chromium` + `LD_LIBRARY_PATH=/tmp/gchromium/lib`); run with
-  `npm run verify:fidelity`.
-* `.tmp/ui-smoke.tsx` — jsdom walk of the session (welcome screen, blank New
-  Profile, collapsed dock + rail open/close + select-to-open, Profile Tools,
-  *Add to builder*, HTML import with a stubbed CSS chain, real `<html>/<body>`
-  in the shadow canvas, `:root` → `html`, verbatim multi-layer background,
-  closing every tab): **30/30**.
+  Requires `npm i --no-save puppeteer-core @sparticuz/chromium`, a Chromium
+  binary (`/tmp/chromium` + `LD_LIBRARY_PATH=/tmp/gchromium/lib`) and a font
+  config that resolves to real fonts — the script writes
+  `/tmp/gchromium/fonts/local.conf` and sets `FONTCONFIG_FILE`, otherwise Skia
+  aborts the renderer (`SkFontMgr_FontConfigInterface … Not implemented`) the
+  moment it measures text.
