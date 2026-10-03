@@ -294,6 +294,12 @@ function safeAbsoluteUrl(value: string, baseUrl: string): string {
 export function augmentCssWithBackground(css: string, background: DetectedBackground): string {
   if (!background.detected) return css;
 
+  // A verified page may paint both html and body intentionally. Re-emitting the
+  // computed values as extra rules duplicates the image layers and changes the
+  // browser's canvas/body background propagation. Preserve the source CSS as-is;
+  // the editor's canvas surface fallback handles only genuinely missing paint.
+  if (background.verified) return css;
+
   const header = [
     '/* ------------------------------------------------------------------',
     '   Profile surface reproduced by BBStudio import',
@@ -1369,6 +1375,7 @@ export async function importProfileFromUrl(
 function backgroundToSettings(background: DetectedBackground): Partial<CanvasSettings> {
   if (!background.detected) return {};
   const out: Partial<CanvasSettings> = {};
+  if (background.verified) out.backgroundVerified = true;
   if (background.color) out.backgroundColor = background.color;
   if (background.image) out.backgroundImage = background.image;
   // Exact multi-layer value (gradients + multiple urls), used by the editor and

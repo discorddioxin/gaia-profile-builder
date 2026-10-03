@@ -1893,7 +1893,9 @@ export const EditableImportedCanvas = forwardRef<
     // is applied as a zero-specificity base layer so it renders even when the
     // original selector cannot match inside this shadow root. Imported rules
     // always win over it.
-    const surfaceCss = buildSurfaceFallbackCss(settings);
+    // If browser-measured source CSS already paints the page, don't stack a
+    // second synthetic background over it (notably on repeating body images).
+    const surfaceCss = settings.backgroundVerified ? '' : buildSurfaceFallbackCss(settings);
     if (surfaceCss) {
       const surfaceStyle = document.createElement('style');
       surfaceStyle.setAttribute(SURFACE_STYLE_MARK, '');

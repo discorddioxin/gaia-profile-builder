@@ -164,6 +164,8 @@ export interface CanvasSettings {
   backgroundImage?: string;
   /** Exact multi-layer `background-image` value (gradients + urls), used by imported profiles. */
   backgroundImageLayers?: string;
+  /** True when the imported html/body paint was measured from the source page. */
+  backgroundVerified?: boolean;
   backgroundRepeat?: string;
   backgroundSize?: string;
   backgroundPosition?: string;
