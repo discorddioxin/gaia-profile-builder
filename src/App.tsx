@@ -12,7 +12,7 @@ import {
   CLIP_PRESETS,
 } from './utils/presets';
 import { createGaiaPanelElement, getGaiaComponent } from './utils/gaiaSpec';
-import { HeaderBar, AppViewMode } from './components/HeaderBar';
+import { HeaderBar, AppViewMode, AppSection } from './components/HeaderBar';
 import { Canvas } from './components/Canvas';
 import { DockPanel, DockTab } from './components/DockPanel';
 import { RightClickMenu } from './components/RightClickMenu';
@@ -21,6 +21,8 @@ import { TranspilerModal } from './components/TranspilerModal';
 import { ForumPreview } from './components/ForumPreview';
 import { ImportModal } from './components/ImportModal';
 import { ProfileTabs } from './components/ProfileTabs';
+import { WelcomeScreen } from './components/WelcomeScreen';
+import { ToolsStudio } from './components/ToolsStudio';
 import { ImportedCanvas } from './components/ImportedCanvas';
 import {
   EditableImportedCanvas,
@@ -31,6 +33,22 @@ import {
 } from './components/EditableImportedCanvas';
 
 const LOCAL_STORAGE_CUSTOM_KEY = 'bbstudio_custom_components_v1';
+
+/** Settings used by brand-new tabs (and by the dock before a profile exists). */
+const BLANK_SETTINGS: CanvasSettings = {
+  width: 1380,
+  height: 600,
+  backgroundColor: '#0e111a',
+  backgroundRepeat: 'no-repeat',
+  backgroundSize: 'cover',
+  gridSnap: true,
+  gridSize: 10,
+  showGrid: false,
+  profileTitle: 'Untitled Profile',
+  forumTheme: 'dark-cyber',
+};
+
+const EMPTY_ELEMENTS: ProfileElement[] = [];
 
 /** Create a fresh Profile from starter data or blank */
 function makeProfile(overrides: Partial<Profile> = {}): Profile {
@@ -51,16 +69,8 @@ function makeProfile(overrides: Partial<Profile> = {}): Profile {
 
 function makeBlankProfile(index: number): Profile {
   const settings: CanvasSettings = {
-    width: 1380,
-    height: 600,
-    backgroundColor: '#0e111a',
-    backgroundRepeat: 'no-repeat',
-    backgroundSize: 'cover',
-    gridSnap: true,
-    gridSize: 10,
-    showGrid: false,
+    ...BLANK_SETTINGS,
     profileTitle: `Untitled Profile ${index}`,
-    forumTheme: 'dark-cyber',
   };
   return makeProfile({
     title: `Untitled ${index}`,
@@ -74,16 +84,17 @@ export const App: React.FC = () => {
   // ============================================================
   // MULTI-PROFILE STATE (each tab = one Profile with its own history)
   // ============================================================
-  const initialProfile = makeProfile({ title: STARTER_PROFILES.cyberpunk.settings.profileTitle });
-  const [profiles, setProfiles] = useState<Profile[]>([initialProfile]);
-  const [activeProfileId, setActiveProfileId] = useState<string>(initialProfile.id);
+  // The builder starts empty on purpose: nothing is created until the user
+  // clicks "New Profile" or imports one (see WelcomeScreen).
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string>('');
 
-  // Derived: the currently active profile & its state
-  const activeProfile =
-    profiles.find((p) => p.id === activeProfileId) || profiles[0];
-  const elements = activeProfile.elements;
-  const settings = activeProfile.settings;
-  const selectedId = activeProfile.selectedId;
+  // Derived: the currently active profile & its state. `null` while the
+  // welcome screen is showing.
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) || null;
+  const elements = activeProfile?.elements ?? EMPTY_ELEMENTS;
+  const settings = activeProfile?.settings ?? BLANK_SETTINGS;
+  const selectedId = activeProfile?.selectedId ?? null;
 
   /** Update a single profile by id (immutable) */
   const updateProfile = useCallback(
@@ -95,7 +106,10 @@ export const App: React.FC = () => {
 
   /** Update the currently active profile */
   const updateActiveProfile = useCallback(
-    (updater: (p: Profile) => Profile) => updateProfile(activeProfileId, updater),
+    (updater: (p: Profile) => Profile) => {
+      if (!activeProfileId) return; // welcome screen — nothing to update yet
+      updateProfile(activeProfileId, updater);
+    },
     [updateProfile, activeProfileId]
   );
 
@@ -103,6 +117,8 @@ export const App: React.FC = () => {
   // UI STATE (shared across tabs)
   // ============================================================
   const [viewMode, setViewMode] = useState<AppViewMode>('canvas');
+  /** Top-level section — Profile Builder (editor) or Profile Tools (labs). */
+  const [appSection, setAppSection] = useState<AppSection>('builder');
 
   const [zoom, setZoom] = useState<number>(() => {
     if (typeof window !== 'undefined' && window.innerWidth < 768) {
@@ -111,9 +127,9 @@ export const App: React.FC = () => {
     return 1;
   });
 
-  const [isDockOpen, setIsDockOpen] = useState<boolean>(() => {
-    return typeof window !== 'undefined' && window.innerWidth >= 768;
-  });
+  // Collapsed on launch on every screen size — the properties sidebar opens
+  // itself once an element (or imported node) is selected.
+  const [isDockOpen, setIsDockOpen] = useState<boolean>(false);
 
   const [dockTab, setDockTab] = useState<DockTab>('properties');
   const [zenMode, setZenMode] = useState<boolean>(false);
@@ -147,6 +163,10 @@ export const App: React.FC = () => {
       setImportedEffects(null);
       return;
     }
+    if (!activeProfile?.isImported) {
+      setImportedEffects(null);
+      return;
+    }
     setImportedEffects(importedCanvasRef.current?.computeEffects(importedNode.bbId) || null);
   }, [importedNode?.bbId]);
 
@@ -154,7 +174,13 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     refreshImportedEffects();
-  }, [refreshImportedEffects, activeProfileId, activeProfile.renderMode, activeProfile.rawHtml?.length]);
+  }, [
+    refreshImportedEffects,
+    activeProfileId,
+    activeProfile?.renderMode,
+    activeProfile?.rawHtml?.length,
+    activeProfile?.isImported,
+  ]);
 
   // Custom drag-n-drop library persisted in localStorage (shared across tabs)
   const [customComponents, setCustomComponents] = useState<CustomComponent[]>(() => {
@@ -202,7 +228,7 @@ export const App: React.FC = () => {
   );
 
   const handleUndo = useCallback(() => {
-    if (activeProfile.historyIdx <= 0) return;
+    if (!activeProfile || activeProfile.historyIdx <= 0) return;
     isUndoRedoAction.current = true;
     const target = activeProfile.history[activeProfile.historyIdx - 1];
     updateActiveProfile((p) => ({
@@ -214,7 +240,7 @@ export const App: React.FC = () => {
   }, [activeProfile, updateActiveProfile]);
 
   const handleRedo = useCallback(() => {
-    if (activeProfile.historyIdx >= activeProfile.history.length - 1) return;
+    if (!activeProfile || activeProfile.historyIdx >= activeProfile.history.length - 1) return;
     isUndoRedoAction.current = true;
     const target = activeProfile.history[activeProfile.historyIdx + 1];
     updateActiveProfile((p) => ({
@@ -227,15 +253,18 @@ export const App: React.FC = () => {
 
   const selectedElement = elements.find((el) => el.id === selectedId) || null;
 
+  /**
+   * Selecting something is what opens the sidebar: the dock stays collapsed on
+   * launch and expands the first time an element or imported node is picked.
+   */
   const focusSelectedElementPane = useCallback(() => {
     setDockTab((prev) => {
-      // Gently switch to properties if we are on a non-editing tab,
-      // but do NOT forcefully open the dock if the user closed it.
       if (prev === 'elements' || prev === 'custom' || prev === 'canvas' || prev === 'layers') {
         return 'properties';
       }
       return prev;
     });
+    setIsDockOpen(true);
   }, []);
 
   // ============================================================
@@ -480,10 +509,32 @@ export const App: React.FC = () => {
     [elements, settings, updateActiveProfile, recordHistory]
   );
 
+  /** Welcome-screen path: a starter layout becomes its own profile tab. */
+  const handleNewProfileFromStarter = useCallback((key: string) => {
+    const starter = STARTER_PROFILES[key];
+    if (!starter) return;
+    const profile = makeProfile({
+      title: starter.settings.profileTitle,
+      elements: starter.elements,
+      settings: { ...starter.settings, width: starter.settings.width || 1380 },
+      history: [{ elements: starter.elements, settings: starter.settings }],
+      historyIdx: 0,
+      selectedId: null,
+    });
+    setProfiles((prev) => [...prev, profile]);
+    setActiveProfileId(profile.id);
+    setAppSection('builder');
+  }, []);
+
   const handleLoadStarterProfile = useCallback(
     (key: string) => {
       const starter = STARTER_PROFILES[key];
       if (!starter) return;
+      if (!activeProfile) {
+        // Welcome screen: a starter layout opens as its own profile tab.
+        handleNewProfileFromStarter(key);
+        return;
+      }
       updateActiveProfile((p) => ({
         ...p,
         title: starter.settings.profileTitle,
@@ -494,7 +545,55 @@ export const App: React.FC = () => {
         selectedId: null,
       }));
     },
-    [updateActiveProfile]
+    [updateActiveProfile, activeProfile, handleNewProfileFromStarter]
+  );
+
+  /**
+   * Profile Tools → builder bridge. The result arrives as a real profile
+   * element: it is appended to the open profile, or it opens the first profile
+   * when the builder is still empty.
+   */
+  const handleSendToolElement = useCallback(
+    (element: ProfileElement) => {
+      if (profiles.length === 0) {
+        // Tools-first flow: the result opens the first profile.
+        const settings: CanvasSettings = { ...BLANK_SETTINGS, profileTitle: 'Toolkit Profile' };
+        const fresh = makeProfile({
+          title: 'Toolkit Profile',
+          elements: [element],
+          settings,
+          history: [{ elements: [element], settings }],
+          historyIdx: 0,
+          selectedId: element.id,
+        });
+        setProfiles([fresh]);
+        setActiveProfileId(fresh.id);
+      } else {
+        const targetId = activeProfileId || profiles[0].id;
+        setProfiles((prev) =>
+          prev.map((profile) => {
+            if (profile.id !== targetId) return profile;
+            const nextElements = [...profile.elements, element];
+            const trimmed = profile.history.slice(0, profile.historyIdx + 1);
+            const nextHistory = [...trimmed, { elements: nextElements, settings: profile.settings }];
+            const capped = nextHistory.length > 60 ? nextHistory.slice(-60) : nextHistory;
+            return {
+              ...profile,
+              elements: nextElements,
+              selectedId: element.id,
+              history: capped,
+              historyIdx: capped.length - 1,
+            };
+          })
+        );
+        setActiveProfileId(targetId);
+      }
+      setAppSection('builder');
+      setViewMode('canvas');
+      setDockTab('properties');
+      setIsDockOpen(true);
+    },
+    [activeProfileId, profiles]
   );
 
   const handleAddCustomComponent = useCallback(
@@ -541,12 +640,13 @@ export const App: React.FC = () => {
   const handleCloseProfile = useCallback(
     (id: string) => {
       setProfiles((prev) => {
-        if (prev.length <= 1) return prev; // never close the last tab
+        // The last tab can be closed too — the builder returns to the
+        // welcome screen instead of keeping an empty profile around.
         const next = prev.filter((p) => p.id !== id);
         if (activeProfileId === id) {
           const closedIdx = prev.findIndex((p) => p.id === id);
           const fallback = next[Math.max(0, closedIdx - 1)] || next[0];
-          if (fallback) setActiveProfileId(fallback.id);
+          setActiveProfileId(fallback ? fallback.id : '');
         }
         return next;
       });
@@ -666,13 +766,13 @@ export const App: React.FC = () => {
   // Clear imported selection when switching to a non-imported tab or when
   // switching between profiles altogether.
   useEffect(() => {
-    if (!activeProfile.isImported || activeProfile.renderMode !== 'canvas') {
+    if (!activeProfile?.isImported || activeProfile.renderMode !== 'canvas') {
       setImportedNode(null);
       setImportedInspectedBbId(null);
       setImportedInspectedNode(null);
       setImportedTree([]);
     }
-  }, [activeProfileId, activeProfile.isImported, activeProfile.renderMode]);
+  }, [activeProfileId, activeProfile?.isImported, activeProfile?.renderMode]);
 
   // ============================================================
   // GLOBAL KEYBOARD SHORTCUTS
@@ -720,14 +820,16 @@ export const App: React.FC = () => {
     <div className="flex h-[100dvh] w-screen flex-col overflow-hidden bg-slate-950 text-slate-100 font-sans">
       {!zenMode && (
         <HeaderBar
+          appSection={appSection}
+          onChangeSection={setAppSection}
           viewMode={viewMode}
           onChangeViewMode={setViewMode}
           zoom={zoom}
           onZoomIn={handleZoomIn}
           onZoomOut={handleZoomOut}
           onResetZoom={handleResetZoom}
-          canUndo={activeProfile.historyIdx > 0}
-          canRedo={activeProfile.historyIdx < activeProfile.history.length - 1}
+          canUndo={!!activeProfile && activeProfile.historyIdx > 0}
+          canRedo={!!activeProfile && activeProfile.historyIdx < activeProfile.history.length - 1}
           onUndo={handleUndo}
           onRedo={handleRedo}
           zenMode={zenMode}
@@ -738,7 +840,7 @@ export const App: React.FC = () => {
           settings={settings}
           onChangeCanvasWidth={(w) => handleUpdateSettings({ width: w })}
           importedEditorControls={
-            activeProfile.isImported
+            activeProfile?.isImported
               ? {
                   enabled: activeProfile.renderMode !== 'raw',
                   selectionMode: importedSelectionMode,
@@ -764,6 +866,33 @@ export const App: React.FC = () => {
         />
       )}
 
+      {zenMode && (
+        <button
+          onClick={() => setZenMode(false)}
+          className="fixed top-3 left-3 z-50 rounded-lg bg-slate-900/90 border border-slate-700 px-3 py-1.5 text-xs text-slate-300 shadow-xl backdrop-blur-md hover:bg-indigo-600 hover:text-white transition-colors"
+        >
+          Exit Zen Mode (Press Z)
+        </button>
+      )}
+
+      {appSection === 'tools' && (
+        <ToolsStudio
+          onSendToBuilder={handleSendToolElement}
+          onBackToBuilder={() => setAppSection('builder')}
+        />
+      )}
+
+      {appSection === 'builder' && !activeProfile && (
+        <WelcomeScreen
+          onNewProfile={handleNewProfile}
+          onImportProfile={() => setShowImportModal(true)}
+          onLoadStarter={handleNewProfileFromStarter}
+          onOpenTools={() => setAppSection('tools')}
+        />
+      )}
+
+      {appSection === 'builder' && activeProfile && (
+      <>
       {!zenMode && (
         <ProfileTabs
           profiles={profiles}
@@ -773,15 +902,6 @@ export const App: React.FC = () => {
           onNewProfile={handleNewProfile}
           onRenameProfile={handleRenameProfile}
         />
-      )}
-
-      {zenMode && (
-        <button
-          onClick={() => setZenMode(false)}
-          className="fixed top-3 left-3 z-50 rounded-lg bg-slate-900/90 border border-slate-700 px-3 py-1.5 text-xs text-slate-300 shadow-xl backdrop-blur-md hover:bg-indigo-600 hover:text-white transition-colors"
-        >
-          Exit Zen Mode (Press Z)
-        </button>
       )}
 
       <div className="relative flex flex-1 w-full overflow-hidden">
@@ -874,7 +994,7 @@ export const App: React.FC = () => {
                 onUpdateSettings={handleUpdateSettings}
                 onOpenSaveCustomModal={() => setShowSaveCustomModal(true)}
                 importedProfile={
-                  activeProfile.isImported
+                  activeProfile?.isImported
                     ? {
                         renderMode: activeProfile.renderMode || 'canvas',
                         onSwitchRenderMode: handleSwitchRenderMode,
@@ -895,7 +1015,7 @@ export const App: React.FC = () => {
                 importedTree={importedTree}
                 importedEffects={importedEffects}
                 importedEffectsActions={
-                  activeProfile.isImported && activeProfile.renderMode === 'canvas'
+                  activeProfile?.isImported && activeProfile.renderMode === 'canvas'
                     ? {
                         applyEffects: (bbId, patch) => {
                           importedCanvasRef.current?.applyEffects(bbId, patch);
@@ -913,7 +1033,7 @@ export const App: React.FC = () => {
                     : undefined
                 }
                 importedNodeActions={
-                  activeProfile.isImported && activeProfile.renderMode === 'canvas'
+                  activeProfile?.isImported && activeProfile.renderMode === 'canvas'
                     ? {
                         selectNode: (bbId) =>
                           importedCanvasRef.current?.selectNode(bbId),
@@ -992,7 +1112,7 @@ export const App: React.FC = () => {
             elements={elements}
             settings={settings}
             importedProfile={
-              activeProfile.isImported
+              activeProfile?.isImported
                 ? { rawHtml: activeProfile.rawHtml, sourceUrl: activeProfile.sourceUrl }
                 : null
             }
@@ -1082,12 +1202,15 @@ export const App: React.FC = () => {
           elements={elements}
           settings={settings}
           importedProfile={
-            activeProfile.isImported
+            activeProfile?.isImported
               ? { rawHtml: activeProfile.rawHtml, rawCss: activeProfile.rawCss }
               : null
           }
           onClose={() => setShowTranspilerModal(false)}
         />
+      )}
+
+      </>
       )}
 
       {showImportModal && (

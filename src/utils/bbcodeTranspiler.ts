@@ -160,6 +160,52 @@ export function getAnimationKeyframes(): string {
 @keyframes cyberBlink {
   0%, 49.9% { opacity: 1; }
   50%, 100% { opacity: 0.35; }
+}
+
+/* Shape morphs — border-radius / squash cycles */
+@keyframes morphBlob {
+  0%, 100% { border-radius: 42% 58% 63% 37% / 41% 44% 56% 59%; }
+  34% { border-radius: 70% 30% 46% 54% / 30% 62% 38% 70%; }
+  67% { border-radius: 33% 67% 58% 42% / 63% 35% 65% 37%; }
+}
+
+@keyframes morphLiquid {
+  0%, 100% { border-radius: 50% 50% 50% 50% / 60% 40% 60% 40%; transform: scale(1); }
+  50% { border-radius: 60% 40% 45% 55% / 45% 60% 40% 55%; transform: scale(1.03); }
+}
+
+@keyframes morphCorners {
+  0%, 100% { border-radius: 4px; }
+  50% { border-radius: 999px; }
+}
+
+@keyframes morphJelly {
+  0%, 100% { transform: scale(1, 1); }
+  25% { transform: scale(1.08, 0.92); }
+  50% { transform: scale(0.94, 1.06); }
+  75% { transform: scale(1.04, 0.96); }
+}
+
+/* 3D presentation — always paired with perspective() so the depth reads */
+@keyframes tilt3d {
+  0%, 100% { transform: perspective(900px) rotateY(0deg) rotateX(0deg); }
+  25% { transform: perspective(900px) rotateY(-12deg) rotateX(6deg); }
+  75% { transform: perspective(900px) rotateY(12deg) rotateX(-4deg); }
+}
+
+@keyframes flip3d {
+  0% { transform: perspective(1000px) rotateY(0deg); }
+  100% { transform: perspective(1000px) rotateY(360deg); }
+}
+
+@keyframes swing3d {
+  0%, 100% { transform: perspective(800px) rotateX(0deg); transform-origin: top center; }
+  50% { transform: perspective(800px) rotateX(24deg); transform-origin: top center; }
+}
+
+@keyframes depthPop {
+  0%, 100% { transform: perspective(700px) translateZ(0px); }
+  50% { transform: perspective(700px) translateZ(46px) scale(1.02); }
 }`;
 }
 

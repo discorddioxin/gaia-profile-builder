@@ -14,13 +14,18 @@ import {
   FolderOpen,
   MoreVertical,
   Download,
+  Wand2,
 } from 'lucide-react';
 import { CanvasSettings } from '../types/profile';
 import { STARTER_PROFILES } from '../utils/presets';
 
 export type AppViewMode = 'canvas' | 'forum-preview' | 'transpiler';
+export type AppSection = 'builder' | 'tools';
 
 interface HeaderBarProps {
+  /** Top-level section: the profile builder or the isolated Profile Tools. */
+  appSection: AppSection;
+  onChangeSection: (section: AppSection) => void;
   viewMode: AppViewMode;
   onChangeViewMode: (mode: AppViewMode) => void;
   zoom: number;
@@ -51,6 +56,8 @@ interface HeaderBarProps {
 }
 
 export const HeaderBar: React.FC<HeaderBarProps> = ({
+  appSection,
+  onChangeSection,
   viewMode,
   onChangeViewMode,
   zoom,
@@ -94,6 +101,34 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
               <span>BBSTUDIO</span>
             </div>
           </div>
+        </div>
+
+        {/* Section switcher: Profile Builder ⇄ Profile Tools */}
+        <div className="flex items-center rounded-xl border border-slate-800 bg-slate-900 p-0.5 shadow-inner">
+          <button
+            onClick={() => onChangeSection('builder')}
+            title="Profile Builder — canvas, components and export"
+            className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
+              appSection === 'builder'
+                ? 'bg-indigo-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Layout className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Builder</span>
+          </button>
+          <button
+            onClick={() => onChangeSection('tools')}
+            title="Profile Tools — isolated labs for masks, clips, morphs, 3D and surfaces"
+            className={`flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium transition-all ${
+              appSection === 'tools'
+                ? 'bg-pink-600 text-white shadow'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Wand2 className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Tools</span>
+          </button>
         </div>
 
         {/* Profile Presets dropdown (Desktop) */}
@@ -151,8 +186,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
       </div>
 
-      {/* Center: View modes + imported profile controls */}
-      <div className="flex min-w-0 items-center gap-2">
+      {/* Center: View modes + imported profile controls (builder only) */}
+      <div className={`min-w-0 items-center gap-2 ${appSection === 'tools' ? 'hidden' : 'flex'}`}>
         <div className="flex items-center rounded-xl bg-slate-900 p-0.5 border border-slate-800 shadow-inner">
           <button
             onClick={() => onChangeViewMode('canvas')}
@@ -272,8 +307,8 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         )}
       </div>
 
-      {/* Right: Width presets, Zoom controls, Zen Mode & Export */}
-      <div className="flex items-center gap-1.5 sm:gap-2">
+      {/* Right: Width presets, Zoom controls, Zen Mode & Export (builder only) */}
+      <div className={`items-center gap-1.5 sm:gap-2 ${appSection === 'tools' ? 'hidden' : 'flex'}`}>
         {/* Profile Width Preset selector (Desktop) */}
         <div className="hidden lg:flex items-center gap-1 text-[11px]">
           <select

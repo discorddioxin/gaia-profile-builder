@@ -150,6 +150,14 @@ export const ANIMATION_PRESETS = [
   { id: 'rainbowBorder', label: 'Chroma Hue Cycle', description: 'Cycling hue spectrum glow', icon: '🌈' },
   { id: 'fadeIn', label: 'Fade In Entrance', description: 'Smooth vertical reveal', icon: '👁️' },
   { id: 'cyberBlink', label: 'Terminal Blink', description: 'Authentic retro cursor blink', icon: '📟' },
+  { id: 'morphBlob', label: 'Blob Morph', description: 'Organic blob cycling through corner radii', icon: '🫧' },
+  { id: 'morphLiquid', label: 'Liquid Wobble', description: 'Soft pulsing blob with drifting radius', icon: '💧' },
+  { id: 'morphCorners', label: 'Corner Shift', description: 'Square to capsule corner transformation', icon: '🔲' },
+  { id: 'morphJelly', label: 'Jelly Squash', description: 'Squash-and-stretch elasticity', icon: '🍮' },
+  { id: 'tilt3d', label: '3D Tilt Sway', description: 'Panel sways on the Y and X axes', icon: '🎴' },
+  { id: 'flip3d', label: '3D Flip Card', description: 'Full Y-axis card flip with perspective', icon: '🃏' },
+  { id: 'swing3d', label: 'Hanging Swing', description: 'Top-hinged 3D pendulum swing', icon: '🕰️' },
+  { id: 'depthPop', label: 'Depth Pop', description: 'Pulses toward the viewer on the Z axis', icon: '🔭' },
 ];
 
 export const DEFAULT_CUSTOM_COMPONENTS: CustomComponent[] = [

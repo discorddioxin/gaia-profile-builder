@@ -73,7 +73,17 @@ export type AnimationPreset =
   | 'rainbowBorder'
   | 'fadeIn'
   | 'scanline'
-  | 'cyberBlink';
+  | 'cyberBlink'
+  // Morphs (shape morphology — see src/utils/toolPresets.ts)
+  | 'morphBlob'
+  | 'morphLiquid'
+  | 'morphCorners'
+  | 'morphJelly'
+  // 3D presentation
+  | 'tilt3d'
+  | 'flip3d'
+  | 'swing3d'
+  | 'depthPop';
 
 export interface AnimationConfig {
   enabled: boolean;

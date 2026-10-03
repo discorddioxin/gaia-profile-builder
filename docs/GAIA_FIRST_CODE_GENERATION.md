@@ -205,3 +205,58 @@ then run with `node`):
   **6/6**.
 - `app-smoke` — full app boots in StrictMode with no React errors and the Gaia
   palette offers all 15 component kinds: **7/7**.
+
+## 8. Startup, sidebar and the Profile Tools section
+
+### No default profile
+The builder boots with an empty `profiles` array — nothing is generated until
+the user acts. `WelcomeScreen` takes over the workspace and leads with two
+primary actions (**New Profile**, **Import Profile**), the three starter layouts
+and a shortcut into Profile Tools. Closing the last profile tab returns to that
+screen instead of leaving an empty tab behind. Because `App` now has no
+guaranteed active profile, `activeProfile` is nullable and every profile-bound
+surface renders inside an `activeProfile &&` region; undo/redo, settings updates
+and the global shortcuts no-op while the welcome screen is up.
+
+### Sidebar behaviour
+The properties sidebar (`DockPanel`) starts collapsed on every screen size.
+Selecting something is what opens it: `focusSelectedElementPane()` switches to
+the Props tab **and** expands the dock, and it is called from canvas element
+selection, imported-node selection and every add/replace action. The rail's
+*Add* / *Props* buttons still open the panel manually, and pressing `Tab`
+toggles it.
+
+### Profile Tools (second top-level section)
+The header carries a Builder ⇄ Tools switcher; the two sections are independent
+and the Profile Tools workspace never mutates the active profile by itself.
+`ToolsStudio` hosts three labs:
+
+- **Component Lab** — pick any of the 15 Gaia content types (grouped by
+  `GAIA_CATEGORIES`), then stack tooling: clip presets, mask presets, one motion
+  layer (animations / morphs / 3D) and any number of surface tokens
+  (`SURFACE_TOKENS`: neon glow, glass blur, gradient edge, scanlines, 3D plane,
+  inner frame). The result is assembled as a real `gaia-panel` `ProfileElement`
+  and run through `transpileProfile`, so the sandboxed preview and the copy
+  buttons show exactly what Gaia will receive. *Add to builder* appends it to the
+  open profile (or opens a `Toolkit Profile` when none exists yet) and switches
+  back with the element selected.
+- **Effect Library** — copy-ready CSS snippets (`EFFECT_SNIPPETS`) grouped by
+  Motion / Shape / Surface / Text / Layout, each previewed against real panel
+  markup; they target the Gaia ids (`#id_details`, …) so they paste straight into
+  a profile.
+- **Background Studio** — builds the `body#viewer { … }` surface rule
+  (colour, linear/radial gradient, vignette, image, repeat, size, attachment)
+  used for backgrounds that only exist as CSS.
+
+New presets live in `src/utils/toolPresets.ts`; the morph and 3D motion presets
+are also part of the shared animation library (`ANIMATION_PRESETS`,
+`getAnimationKeyframes()`), so they are available in the normal Animation Studio
+and export as self-contained keyframes there too.
+
+**Verification**: `.tmp/studio-smoke.tsx` (same jsdom/esbuild recipe as above)
+walks the whole session — empty start, New Profile, collapsed sidebar, select to
+re-open, Import modal, Tools section, all 15 content types, clip + morph + 3D +
+surface tooling landing in the exported document, *Add to builder* in both
+directions, and closing the last tab: **39/39**. The earlier `effects-smoke`,
+`tree-smoke` and `dock-smoke` harnesses (section 7) were removed by a sandbox
+restart and can be regenerated from that section's notes.
