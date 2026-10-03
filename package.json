@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "verify:fidelity": "node scripts/verify/background-fidelity.mjs",
-    "verify:ui": "node scripts/verify/run-ui-smoke.mjs"
+    "verify:ui": "node scripts/verify/run-ui-smoke.mjs",
+    "build:single": "npm run build && node scripts/make-standalone.mjs",
+    "preview:standalone": "node scripts/make-standalone.mjs"
   },
   "dependencies": {
     "@types/canvas-confetti": "^1.9.0",
