@@ -8,12 +8,34 @@ import {
 import { getClipPathCss, getMaskCss } from '../utils/bbcodeTranspiler';
 import {
   columnForX,
-  gaiaPanelPreview,
+  buildPanelHtml,
+  GAIA_PANEL_BASE_CSS,
   getGaiaComponent,
   isGaiaComponentKind,
 } from '../utils/gaiaSpec';
 import { FloatingMicroBar } from './FloatingMicroBar';
 import { RotateCw, Lock, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
+
+function escapePreviewText(value: string): string {
+  return value.replace(/[&<>\"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[char] || char);
+}
+
+function buildGaiaPanelPreviewDocument(el: ProfileElement): string {
+  if (!el.gaia || !isGaiaComponentKind(el.gaia.kind)) return '';
+  const def = getGaiaComponent(el.gaia.kind);
+  const panelId = el.gaia.panelId || def.panelId || 'id_custom_1';
+  const title = escapePreviewText(el.gaia.title || el.content || def.defaultTitle);
+  const markup = buildPanelHtml(el.gaia.kind, {
+    index: 1,
+    title,
+    bodyHtml: el.gaia.bodyHtml || def.bodyHtml,
+    panelId,
+    extraStyle: `min-height:${el.height}px`,
+  });
+  const panelStyle = `#${panelId} { width:100%; min-height:${el.height}px; margin:0; box-sizing:border-box; background-color:${el.backgroundColor}; ${el.backgroundImage ? `background-image:url('${el.backgroundImage}');background-size:cover;background-position:center;` : ''} color:${el.color}; border:${el.borderWidth}px ${el.borderStyle} ${el.borderColor}; border-radius:${el.borderRadius}px; padding:${el.padding}px; box-shadow:${el.boxShadow}; font-family:${el.fontFamily}; font-size:${el.fontSize}px; }`;
+  const css = `html,body{margin:0;min-height:100%;background:transparent}body{padding:0}.panel{width:100%;margin:0;box-sizing:border-box}${GAIA_PANEL_BASE_CSS}\n${def.defaultCss}\n${panelStyle}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body>${markup}</body></html>`;
+}
 
 interface CanvasProps {
   elements: ProfileElement[];
@@ -526,18 +548,18 @@ export const Canvas: React.FC<CanvasProps> = ({
                   <div
                     className="w-full h-full overflow-hidden"
                     style={{
-                      backgroundColor: el.backgroundColor,
-                      backgroundImage: el.backgroundImage
+                      backgroundColor: el.type === 'gaia-panel' ? 'transparent' : el.backgroundColor,
+                      backgroundImage: el.type !== 'gaia-panel' && el.backgroundImage
                         ? `url('${el.backgroundImage}')`
                         : undefined,
                       border:
-                        el.borderWidth > 0
+                        el.type !== 'gaia-panel' && el.borderWidth > 0
                           ? `${el.borderWidth}px ${el.borderStyle} ${el.borderColor}`
                           : undefined,
-                      borderRadius: `${el.borderRadius}px`,
-                      boxShadow: el.boxShadow !== 'none' ? el.boxShadow : undefined,
+                      borderRadius: el.type === 'gaia-panel' ? undefined : `${el.borderRadius}px`,
+                      boxShadow: el.type !== 'gaia-panel' && el.boxShadow !== 'none' ? el.boxShadow : undefined,
                       backdropFilter: el.backdropFilter,
-                      padding: `${el.padding}px`,
+                      padding: el.type === 'gaia-panel' ? 0 : `${el.padding}px`,
                       clipPath: clipCss || undefined,
                       WebkitMaskImage: maskCss.webkitMask || undefined,
                       maskImage: maskCss.mask || undefined,
@@ -632,36 +654,14 @@ export const Canvas: React.FC<CanvasProps> = ({
 
                         {/* GAIA V2 COMPONENT — rendered as its real panel structure */}
                         {el.type === 'gaia-panel' && el.gaia && (
-                          <div className="w-full h-full flex flex-col bg-slate-950/85 pointer-events-none">
-                            <div className="flex items-center justify-between gap-1 border-b border-cyan-500/30 bg-cyan-500/15 px-1.5 py-0.5">
-                              <span className="truncate font-mono text-[9px] text-cyan-200">
-                                .panel.{getGaiaComponent(el.gaia.kind).panelClass.split(' ')[0]}
-                              </span>
-                              <span className="shrink-0 font-mono text-[9px] text-cyan-300/80">
-                                col {el.gaia.column}
-                              </span>
-                            </div>
-                            <div className="truncate border-b border-slate-700/60 px-2 py-1 text-[11px] font-semibold text-indigo-200">
-                              {el.gaia.title || el.content || getGaiaComponent(el.gaia.kind).defaultTitle}
-                            </div>
-                            <div className="flex-1 space-y-0.5 overflow-hidden px-2 py-1">
-                              {gaiaPanelPreview(el.gaia.kind, el.gaia.column, el.gaia.title, el.gaia.panelId).rows.map(
-                                (row) => (
-                                  <div key={row} className="truncate font-mono text-[9px] text-slate-400">
-                                    ▦ {row}
-                                  </div>
-                                )
-                              )}
-                            </div>
-                            <div className="flex items-center justify-between gap-1 border-t border-slate-800 px-1.5 py-0.5 font-mono text-[8px] text-slate-500">
-                              <span className="truncate">
-                                #{el.gaia.panelId || getGaiaComponent(el.gaia.kind).panelId || 'id_custom_####'}
-                              </span>
-                              {getGaiaComponent(el.gaia.kind).bbcodeRequired && (
-                                <span className="shrink-0 text-pink-400/80">bbcode</span>
-                              )}
-                            </div>
-                          </div>
+                          <iframe
+                            title={`${getGaiaComponent(el.gaia.kind).label} Gaia panel preview`}
+                            sandbox=""
+                            tabIndex={-1}
+                            aria-hidden="true"
+                            className="h-full w-full border-0 bg-transparent pointer-events-none"
+                            srcDoc={buildGaiaPanelPreviewDocument(el)}
+                          />
                         )}
                       </>
                     )}

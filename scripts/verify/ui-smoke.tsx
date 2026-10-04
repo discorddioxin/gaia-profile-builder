@@ -265,8 +265,13 @@ check('Profile Tools section renders', /Profile Tools|Make anything/i.test(text(
 const addToBuilder = buttonByText(/Add to builder/i);
 check('tools expose Add to builder', !!addToBuilder);
 
-await click(buttonByText(/Details|Comments|Friends/), 'content type chip');
+await click(buttonByText(/^Comments$/, true), 'content type chip');
 check('tools expose Gaia spec IDs', /#id_(details|comments|friends).*#(details|comments|friends)_title/.test(text()));
+const leftColumnButton = buttonByText(/^Left$/, true);
+if (leftColumnButton) await click(leftColumnButton, 'Left preview column');
+check('preview column toggle applies a column-width preset', !!leftColumnButton && leftColumnButton.getAttribute('aria-pressed') === 'true' && /320px/.test(leftColumnButton.getAttribute('title') || ''));
+const middleColumnButton = buttonByText(/^Middle$/, true);
+if (middleColumnButton) await click(middleColumnButton, 'Middle preview column');
 const glitchChip = buttonByText(/Cyber Glitch/);
 const tiltChip = buttonByText(/3D Tilt Sway/);
 if (glitchChip) await click(glitchChip, 'Cyber Glitch motion layer');
@@ -278,6 +283,8 @@ await click(addToBuilder, 'Add to builder');
 await settle(200);
 const afterTools = canvasCount();
 check('Add to builder creates elements in the canvas', afterTools > beforeTools, `${beforeTools} → ${afterTools}`);
+const realGaiaPanelPreview = window.document.querySelector('iframe[title="Comments Gaia panel preview"]') as HTMLIFrameElement | null;
+check('Builder renders the real Gaia panel markup and IDs', !!realGaiaPanelPreview && /class="panel comments_panel" id="id_comments"/.test(realGaiaPanelPreview.srcdoc) && /id="comments_title"/.test(realGaiaPanelPreview.srcdoc));
 check('dock is open for the selected tool element', isDockOpen());
 
 // Collapse, then select an existing element by hand: selection must re-open it.

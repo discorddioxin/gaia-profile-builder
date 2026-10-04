@@ -28,6 +28,7 @@ import {
   GAIA_CATEGORIES,
   GAIA_COMPONENT_LIST,
   getGaiaComponent,
+  xForColumn,
   GaiaComponentKind,
 } from '../../utils/gaiaSpec';
 import { transpileProfile } from '../../utils/bbcodeTranspiler';
@@ -50,6 +51,10 @@ const LAB_SETTINGS: CanvasSettings = {
   profileTitle: 'Profile Tools Preview',
   forumTheme: 'dark-cyber',
 };
+
+// Gaia's documented profile shell caps #columns at 1000px. With 12px column
+// gaps and 8px outer padding, this is the natural panel width in each column.
+const DEFAULT_GAIA_COLUMN_WIDTH = Math.floor((Math.min(LAB_SETTINGS.width, 1000) - 40) / 3);
 
 interface MotionState {
   duration: number;
@@ -104,6 +109,8 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
   const element = useMemo<ProfileElement>(() => {
     const base = createGaiaPanelElement(kind, column, 0, LAB_SETTINGS);
     const resolvedTitle = title.trim() || def.defaultTitle;
+    const panelWidth = DEFAULT_GAIA_COLUMN_WIDTH;
+    const panelX = xForColumn(LAB_SETTINGS, column, panelWidth);
 
     const clip: ClipConfig = { ...base.clip };
     if (clipPresetId) {
@@ -136,7 +143,9 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
 
     return {
       ...base,
-      name: `${def.label} (tool)`,
+      x: panelX,
+      width: panelWidth,
+      name: `${def.label} (tool)`, 
       content: resolvedTitle,
       gaia: { ...base.gaia!, title: resolvedTitle },
       clip,
@@ -249,7 +258,7 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
               );
             })}
           </div>
-          <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+          <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
             <label className="flex flex-col gap-1">
               <span className="text-[10px] text-slate-500">Panel title</span>
               <input
@@ -258,18 +267,6 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
                 placeholder={def.defaultTitle}
                 className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100 focus:border-indigo-500 focus:outline-none"
               />
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-slate-500">Column</span>
-              <select
-                value={column}
-                onChange={(e) => setColumn(Number(e.target.value) as 1 | 2 | 3)}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100"
-              >
-                <option value={1}>1</option>
-                <option value={2}>2</option>
-                <option value={3}>3</option>
-              </select>
             </label>
             <label className="flex flex-col gap-1">
               <span className="text-[10px] text-slate-500">Accent</span>
@@ -445,6 +442,28 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
 
       {/* -------------------------------- preview -------------------------- */}
       <div className="flex w-full min-h-[440px] shrink-0 flex-col gap-2 border-t border-slate-800 bg-slate-950/60 p-2.5 lg:w-1/2 lg:min-h-0 lg:border-l lg:border-t-0">
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/70 px-2 py-1.5">
+          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Column</span>
+          <div className="flex min-w-0 flex-1 justify-end gap-1">
+            {([
+              { value: 1 as const, label: 'Left' },
+              { value: 2 as const, label: 'Middle' },
+              { value: 3 as const, label: 'Right' },
+            ]).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={column === option.value}
+                title={`${option.label} column · default panel width ${DEFAULT_GAIA_COLUMN_WIDTH}px`}
+                onClick={() => setColumn(option.value)}
+                className={`rounded-md border px-2 py-1 text-[10px] transition-colors ${column === option.value ? 'border-indigo-400 bg-indigo-500/20 text-indigo-100' : 'border-slate-700 text-slate-400 hover:text-white'}`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <span className="shrink-0 font-mono text-[9px] text-slate-500">{DEFAULT_GAIA_COLUMN_WIDTH}px</span>
+        </div>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
             <Wand2 className="h-3.5 w-3.5 text-pink-400" />
