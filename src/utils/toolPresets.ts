@@ -65,6 +65,36 @@ export const THREE_D_PRESETS: MotionPreset[] = [
     description: 'Pulses toward the viewer on the Z axis',
     icon: '🔭',
   },
+  {
+    id: 'orbit3d',
+    label: 'Orbital Tilt',
+    description: 'Smooth two-axis orbital rotation through 3D space',
+    icon: '🪐',
+  },
+  {
+    id: 'cubeTurn',
+    label: 'Cube Turn',
+    description: 'Rotates around a diagonal 3D axis',
+    icon: '🎲',
+  },
+  {
+    id: 'cardHover3d',
+    label: 'Card Lift',
+    description: 'Lifts toward the viewer while tilting like a card',
+    icon: '🪪',
+  },
+  {
+    id: 'roll3d',
+    label: 'Depth Roll',
+    description: 'Rolls around the Z axis with perspective depth',
+    icon: '🌀',
+  },
+  {
+    id: 'parallax3d',
+    label: 'Parallax Drift',
+    description: 'Moves along all three axes for a layered parallax feel',
+    icon: '🌌',
+  },
 ];
 
 /* -------------------------------------------------------------------------- */

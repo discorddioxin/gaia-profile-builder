@@ -188,24 +188,50 @@ export function getAnimationKeyframes(): string {
 
 /* 3D presentation — always paired with perspective() so the depth reads */
 @keyframes tilt3d {
-  0%, 100% { transform: perspective(900px) rotateY(0deg) rotateX(0deg); }
-  25% { transform: perspective(900px) rotateY(-12deg) rotateX(6deg); }
-  75% { transform: perspective(900px) rotateY(12deg) rotateX(-4deg); }
+  0%, 100% { transform: perspective(var(--tool-perspective, 900px)) rotateY(0deg) rotateX(0deg); }
+  25% { transform: perspective(var(--tool-perspective, 900px)) rotateY(calc(var(--tool-rotate-y, 12deg) * -1)) rotateX(var(--tool-rotate-x, 6deg)); }
+  75% { transform: perspective(var(--tool-perspective, 900px)) rotateY(var(--tool-rotate-y, 12deg)) rotateX(calc(var(--tool-rotate-x, 6deg) * -1)); }
 }
 
 @keyframes flip3d {
-  0% { transform: perspective(1000px) rotateY(0deg); }
-  100% { transform: perspective(1000px) rotateY(360deg); }
+  0% { transform: perspective(var(--tool-perspective, 1000px)) rotateY(0deg); }
+  100% { transform: perspective(var(--tool-perspective, 1000px)) rotateY(var(--tool-flip-turn, 360deg)); }
 }
 
 @keyframes swing3d {
-  0%, 100% { transform: perspective(800px) rotateX(0deg); transform-origin: top center; }
-  50% { transform: perspective(800px) rotateX(24deg); transform-origin: top center; }
+  0%, 100% { transform: perspective(var(--tool-perspective, 800px)) rotateX(0deg); transform-origin: var(--tool-origin, top center); }
+  50% { transform: perspective(var(--tool-perspective, 800px)) rotateX(var(--tool-rotate-x, 24deg)); transform-origin: var(--tool-origin, top center); }
 }
 
 @keyframes depthPop {
-  0%, 100% { transform: perspective(700px) translateZ(0px); }
-  50% { transform: perspective(700px) translateZ(46px) scale(1.02); }
+  0%, 100% { transform: perspective(var(--tool-perspective, 700px)) translateZ(0px); }
+  50% { transform: perspective(var(--tool-perspective, 700px)) translateZ(var(--tool-depth, 46px)) scale(1.02); }
+}
+
+@keyframes orbit3d {
+  0%, 100% { transform: perspective(var(--tool-perspective, 900px)) rotateX(0deg) rotateY(0deg); }
+  25% { transform: perspective(var(--tool-perspective, 900px)) rotateX(var(--tool-rotate-x, 12deg)) rotateY(calc(var(--tool-rotate-y, 18deg) * -1)); }
+  75% { transform: perspective(var(--tool-perspective, 900px)) rotateX(calc(var(--tool-rotate-x, 12deg) * -1)) rotateY(var(--tool-rotate-y, 18deg)); }
+}
+
+@keyframes cubeTurn {
+  0% { transform: perspective(var(--tool-perspective, 900px)) rotate3d(1, 1, 0, 0deg); }
+  100% { transform: perspective(var(--tool-perspective, 900px)) rotate3d(1, 1, 0, 360deg); }
+}
+
+@keyframes cardHover3d {
+  0%, 100% { transform: perspective(var(--tool-perspective, 900px)) translateZ(0) rotateX(0) rotateY(0); }
+  50% { transform: perspective(var(--tool-perspective, 900px)) translateZ(var(--tool-depth, 34px)) rotateX(var(--tool-rotate-x, 8deg)) rotateY(var(--tool-rotate-y, 10deg)); }
+}
+
+@keyframes roll3d {
+  0%, 100% { transform: perspective(var(--tool-perspective, 900px)) rotateZ(0deg) translateZ(0); }
+  50% { transform: perspective(var(--tool-perspective, 900px)) rotateZ(180deg) translateZ(var(--tool-depth, 24px)); }
+}
+
+@keyframes parallax3d {
+  0%, 100% { transform: perspective(var(--tool-perspective, 900px)) translate3d(0, 0, 0) rotateX(0) rotateY(0); }
+  50% { transform: perspective(var(--tool-perspective, 900px)) translate3d(0, -8px, var(--tool-depth, 32px)) rotateX(var(--tool-rotate-x, 8deg)) rotateY(var(--tool-rotate-y, 12deg)); }
 }`;
 }
 

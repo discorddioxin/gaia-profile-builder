@@ -83,7 +83,12 @@ export type AnimationPreset =
   | 'tilt3d'
   | 'flip3d'
   | 'swing3d'
-  | 'depthPop';
+  | 'depthPop'
+  | 'orbit3d'
+  | 'cubeTurn'
+  | 'cardHover3d'
+  | 'roll3d'
+  | 'parallax3d';
 
 export interface AnimationConfig {
   enabled: boolean;

@@ -59,17 +59,33 @@ const DEFAULT_GAIA_COLUMN_WIDTH = Math.floor((Math.min(LAB_SETTINGS.width, 1000)
 interface MotionState {
   duration: number;
   delay: number;
+  stagger: number;
   timing: 'linear' | 'ease' | 'ease-in-out' | 'ease-out';
   iteration: 'infinite' | '1' | '2' | '3';
   direction: 'normal' | 'alternate' | 'reverse';
+  fillMode: 'none' | 'forwards' | 'backwards' | 'both';
+  playState: 'running' | 'paused';
+  perspective: number;
+  rotateX: number;
+  rotateY: number;
+  depth: number;
+  origin: 'center center' | 'top center' | 'bottom center' | 'left center' | 'right center';
 }
 
 const DEFAULT_MOTION: MotionState = {
   duration: 3,
   delay: 0,
+  stagger: 0,
   timing: 'ease-in-out',
   iteration: 'infinite',
   direction: 'normal',
+  fillMode: 'both',
+  playState: 'running',
+  perspective: 900,
+  rotateX: 12,
+  rotateY: 18,
+  depth: 32,
+  origin: 'center center',
 };
 
 const MOTION_GROUPS = [
@@ -167,7 +183,7 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
       customCss: [
         surfaceCss,
         motionIds.length
-          ? `animation: ${motionIds.map((id) => `${id} ${motion.duration}s ${motion.timing} ${motion.delay}s ${motion.iteration} ${motion.direction}`).join(', ')} !important; animation-composition: add;`
+          ? `animation: ${motionIds.map((id, index) => `${id} ${motion.duration}s ${motion.timing} ${motion.delay + index * motion.stagger}s ${motion.iteration} ${motion.direction} ${motion.fillMode}`).join(', ')} !important; animation-play-state: ${motion.playState}; animation-composition: add; transform-style: preserve-3d; transform-origin: ${motion.origin}; perspective: ${motion.perspective}px; --tool-perspective: ${motion.perspective}px; --tool-rotate-x: ${motion.rotateX}deg; --tool-rotate-y: ${motion.rotateY}deg; --tool-depth: ${motion.depth}px; --tool-origin: ${motion.origin};`
           : '',
       ].filter(Boolean).join(' ' ) || undefined,
     };
@@ -396,7 +412,21 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder }) =
             <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Easing</span><select value={motion.timing} onChange={(e) => setMotion((prev) => ({ ...prev, timing: e.target.value as MotionState['timing'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="ease-in-out">ease-in-out</option><option value="ease">ease</option><option value="ease-out">ease-out</option><option value="linear">linear</option></select></label>
             <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Iterations</span><select value={motion.iteration} onChange={(e) => setMotion((prev) => ({ ...prev, iteration: e.target.value as MotionState['iteration'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="infinite">infinite</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select></label>
           </div>
-          <p className="text-[10px] text-slate-500">Select multiple animation, morph, and 3D layers. Their keyframes run together; clip, mask, and surface styling remain stacked alongside them.</p>
+          <details className="rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2">
+            <summary className="cursor-pointer text-[10px] font-medium text-slate-300">Advanced motion properties · timing, playback and 3D depth</summary>
+            <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Direction</span><select value={motion.direction} onChange={(e) => setMotion((prev) => ({ ...prev, direction: e.target.value as MotionState['direction'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="normal">Normal</option><option value="alternate">Alternate</option><option value="reverse">Reverse</option></select></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Stagger (s)</span><input type="number" min={0} step={0.1} value={motion.stagger} onChange={(e) => setMotion((prev) => ({ ...prev, stagger: Number(e.target.value) || 0 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Fill mode</span><select value={motion.fillMode} onChange={(e) => setMotion((prev) => ({ ...prev, fillMode: e.target.value as MotionState['fillMode'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="none">None</option><option value="forwards">Forwards</option><option value="backwards">Backwards</option><option value="both">Both</option></select></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Playback</span><select value={motion.playState} onChange={(e) => setMotion((prev) => ({ ...prev, playState: e.target.value as MotionState['playState'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="running">Running</option><option value="paused">Paused</option></select></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Perspective (px)</span><input type="number" min={200} max={3000} step={50} value={motion.perspective} onChange={(e) => setMotion((prev) => ({ ...prev, perspective: Number(e.target.value) || 900 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Rotate X (°)</span><input type="number" min={-90} max={90} value={motion.rotateX} onChange={(e) => setMotion((prev) => ({ ...prev, rotateX: Number(e.target.value) || 0 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Rotate Y (°)</span><input type="number" min={-90} max={90} value={motion.rotateY} onChange={(e) => setMotion((prev) => ({ ...prev, rotateY: Number(e.target.value) || 0 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+              <label className="flex flex-col gap-1"><span className="text-[10px] text-slate-500">Depth (px)</span><input type="number" min={-200} max={300} value={motion.depth} onChange={(e) => setMotion((prev) => ({ ...prev, depth: Number(e.target.value) || 0 }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100" /></label>
+              <label className="flex flex-col gap-1 sm:col-span-2"><span className="text-[10px] text-slate-500">Transform origin</span><select value={motion.origin} onChange={(e) => setMotion((prev) => ({ ...prev, origin: e.target.value as MotionState['origin'] }))} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-100"><option value="center center">Center</option><option value="top center">Top center</option><option value="bottom center">Bottom center</option><option value="left center">Left center</option><option value="right center">Right center</option></select></label>
+            </div>
+          </details>
+          <p className="text-[10px] text-slate-500">Select and combine multiple animation, morph, and 3D layers. Advanced 3D controls drive perspective, axis rotation, transform origin, and depth.</p>
         </section>
 
         {/* surface */}
