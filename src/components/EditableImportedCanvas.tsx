@@ -19,8 +19,12 @@ import {
   EyeOff,
   Move,
   Layers,
+  Eraser,
 } from 'lucide-react';
 import { CanvasSettings, Profile } from '../types/profile';
+import { getAnimationKeyframes } from '../utils/bbcodeTranspiler';
+import maleAvatarUrl from '../assets/gaia-avatar-male.svg';
+import femaleAvatarUrl from '../assets/gaia-avatar-female.svg';
 
 /**
  * Public info about the currently selected imported node.
@@ -180,6 +184,31 @@ export type ImportedSemanticRole =
   | 'custom-content'
   | 'generic';
 
+/**
+ * Effects authored by the builder on an imported node. Everything is exposed as
+ * plain CSS strings so the values can be written straight to the element and
+ * exported with the profile.
+ */
+export interface ImportedNodeEffects {
+  clipPath: string;
+  maskImage: string;
+  webkitMaskImage: string;
+  animation: string;
+  animationName: string;
+  animationTrigger: 'always' | 'hover';
+  position: string;
+  isAbsolute: boolean;
+  offsetParentId: string;
+}
+
+export interface ImportedEffectsPatch {
+  clipPath?: string | null;
+  maskImage?: string | null;
+  animation?: string | null;
+  /** `null` clears the hover rule; a string installs `.bbfx-N:hover { … }`. */
+  hoverAnimation?: string | null;
+}
+
 export type ImportedDedicatedComponentKind =
   | 'details'
   | 'equipment'
@@ -226,6 +255,15 @@ export interface EditableImportedCanvasApi {
   addBadge(bbId?: string): void;
   deleteBadge(bbId: string): void;
   updateStyle(bbId: string, styleAttr: string): void;
+  /** Computed clip / mask / animation state for the effects editors. */
+  computeEffects(bbId: string): ImportedNodeEffects | null;
+  /** Apply clip / mask / animation to a node (undefined patch keys are left alone). */
+  applyEffects(bbId: string, patch: ImportedEffectsPatch): void;
+  /** Detach the node from column flow and position it absolutely. */
+  makeAbsolute(bbId: string): void;
+  /** Return the node to normal column flow. */
+  makeFlow(bbId: string): void;
+  isAbsolute(bbId: string): boolean;
   applyStyleToChildren(bbId: string, selector: string, styleAttr: string): number;
   updateText(bbId: string, text: string): void;
   updateClassName(bbId: string, className: string): void;
@@ -253,6 +291,7 @@ interface EditableImportedCanvasProps {
 
 // Editor style block markers so we can identify & strip them during serialization
 const EDITOR_STYLE_MARK = 'data-bb-editor-style';
+const SURFACE_STYLE_MARK = 'data-bb-surface-style';
 const HEAD_NODE_MARK = 'data-bb-head-node';
 
 const EDITOR_CSS = `
@@ -290,36 +329,230 @@ const EDITOR_CSS = `
     outline: 2px dashed #22c55e !important;
     cursor: grabbing !important;
   }
+  /* Nodes detached onto the absolute plane get a persistent green hint. */
+  *[data-bb-absolute]:not([data-bb-selected]):not([data-bb-moving]) {
+    outline: 1px dashed rgba(34, 197, 94, 0.55) !important;
+    outline-offset: 1px;
+  }
   a[data-bb-id] {
     /* Prevent link nav on click */
     pointer-events: auto;
   }
+  /*
+   * The imported document keeps a real <html>/<body> pair inside the shadow
+   * tree so page-level selectors and background propagation behave exactly as
+   * they do in a browser. These rules only give them the viewport-sized box a
+   * real page would have.
+   */
+  html[data-bb-import-html] {
+    display: block;
+    min-height: 100%;
+    width: 100%;
+  }
+  /*
+   * No min-height here: on a real page the body box is only as tall as its
+   * content, which is what lets the html/canvas background show below it.
+   * Stretching it would change where the profile's background is visible.
+   */
   body[data-bb-import-body] {
     display: block;
     width: 100%;
-    min-height: 100%;
   }
 `;
 
-function adaptImportedCssForShadow(css: string): string {
-  // In Shadow DOM there is no real document <html>. Gaia themes often put
-  // repeating background rules on `html`, `body`, or `html, body`. Add scoped
-  // aliases so those backgrounds render in the editor without mutating export.
-  return css.replace(/(^|})\s*([^{}@]+)\{/g, (match, brace, selectorText) => {
-    const selectors = String(selectorText)
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (selectors.length === 0) return match;
-    const aliases: string[] = [];
-    selectors.forEach((selector) => {
-      if (selector === 'html') aliases.push(':host', 'body[data-bb-import-body]');
-      if (selector === 'body') aliases.push(':host', 'body[data-bb-import-body]');
-      if (selector === 'html body') aliases.push(':host', 'body[data-bb-import-body]');
+/**
+ * Prepare imported CSS for the shadow root.
+ *
+ * The canvas now renders a real `<html>` element inside the shadow tree, so
+ * `html`, `body`, `html body`, `body#viewer` … all match natively and the
+ * stylesheet text is used **verbatim** — that is what makes the render 1:1.
+ *
+ * The single exception is `:root`: in a shadow tree it addresses the shadow
+ * root (which paints nothing), so it is pointed at the shadow `<html>` element,
+ * which is exactly what `:root` means in a real document (same specificity).
+ */
+function prepareImportedCssForShadow(css: string): string {
+  // Plain scanner: skip comments/strings and only touch a `:root` that starts a
+  // compound selector (`:root`, `html :root`, `:root > body`, `a, :root`).
+  let out = '';
+  let i = 0;
+  let inComment = false;
+  let quote: string | null = null;
+
+  while (i < css.length) {
+    const ch = css[i];
+    const next = css[i + 1];
+
+    if (inComment) {
+      out += ch;
+      if (ch === '*' && next === '/') {
+        out += next;
+        inComment = false;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    if (quote) {
+      out += ch;
+      if (ch === '\\') {
+        out += next ?? '';
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inComment = true;
+      out += '/*';
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ':' && css.slice(i, i + 5).toLowerCase() === ':root') {
+      const before = out.replace(/\s+$/, '').slice(-1);
+      const startsCompound = before === '' || /[,{};>+~]/.test(before);
+      if (startsCompound) {
+        out += 'html';
+        i += 5;
+        continue;
+      }
+    }
+    out += ch;
+    i += 1;
+  }
+
+  return out;
+}
+
+
+/**
+ * Shadow DOM has no real document <html>, and the editor keeps the imported
+ * <body> inside a shadow root. Gaia themes usually paint the surface with
+ * `body { background: ... }` or `html, body { background: ... }` (a *style*,
+ * not an <img>), so those declarations are aliased onto `:host` and the
+ * shadow body. Export/serialization is untouched.
+ */
+type Rect = { left: number; top: number; width: number; height: number };
+type MultiRect = Rect & { bbId: string };
+
+/**
+ * Overlay rects are recomputed every frame while something is selected (so
+ * CSS-animated panels keep their outline in sync). Without change detection
+ * every frame would allocate a new object and force a full app re-render at
+ * 60fps, which pegs the CPU for as long as a node stays selected.
+ */
+function sameRect(a: Rect | null, b: Rect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Effects helpers                                                             */
+/* -------------------------------------------------------------------------- */
+
+/** `@keyframes name { … }` extracted from the shared preset keyframes. */
+/** Extract `@keyframes <name> { … }` from the shared preset keyframes. */
+function keyframesFor(name: string): string {
+  if (!name || name === 'none') return '';
+  const all = getAnimationKeyframes();
+  const start = all.indexOf(`@keyframes ${name}`);
+  if (start === -1) return '';
+  const open = all.indexOf('{', start);
+  if (open === -1) return '';
+  let depth = 0;
+  for (let i = open; i < all.length; i += 1) {
+    if (all[i] === '{') depth += 1;
+    else if (all[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return all.slice(start, i + 1);
+    }
+  }
+  return '';
+}
+
+function hasKeyframes(css: string, name: string): boolean {
+  if (!name || name === 'none') return false;
+  return css.indexOf(`@keyframes ${name}`) !== -1;
+}
+
+/** Remove a generated `/* fx:selector *​/ … /* /fx *​/` block (plain string scan). */
+function removeFxBlock(css: string, selector: string): string {
+  const marker = `/* fx:${selector} */`;
+  const start = css.indexOf(marker);
+  if (start === -1) return css;
+  const endMarker = '/* /fx */';
+  const end = css.indexOf(endMarker, start);
+  if (end === -1) return css.slice(0, start).trimEnd();
+  const joined = css.slice(0, start) + css.slice(end + endMarker.length);
+  return joined.replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+/** Nearest positioned ancestor (the containing block for `position: absolute`). */
+function findContainingBlock(el: HTMLElement): HTMLElement {
+  let node: HTMLElement | null = el.parentElement;
+  while (node) {
+    if (window.getComputedStyle(node).position !== 'static') return node;
+    node = node.parentElement;
+  }
+  const root = el.getRootNode();
+  const host = (root as ShadowRoot).host;
+  return (host as HTMLElement) || document.body;
+}
+
+function isAbsoluteElement(el: HTMLElement): boolean {
+  return window.getComputedStyle(el).position === 'absolute' || window.getComputedStyle(el).position === 'fixed';
+}
+
+/**
+ * Cheap fingerprint of the emitted hierarchy tree. The ResizeObserver fires in
+ * bursts while imported CSS/images resolve, and rebuilding + re-setting the
+ * whole tree each time churns the properties panel for no visible change.
+ */
+function treeSignature(nodes: ImportedTreeNode[]): string {
+  let signature = '';
+  const walk = (list: ImportedTreeNode[], depth: number) => {
+    list.forEach((node) => {
+      signature += `${depth}:${node.bbId}:${node.tag}:${node.semanticRole}:${node.text.length}|`;
+      walk(node.children, depth + 1);
     });
-    const merged = [...selectors, ...aliases].filter((s, i, arr) => arr.indexOf(s) === i);
-    return `${brace}\n${merged.join(', ')} {`;
-  });
+  };
+  walk(nodes, 0);
+  return signature;
+}
+
+function sameMultiRects(a: MultiRect[], b: MultiRect[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((rect, i) => rect.bbId === b[i].bbId && sameRect(rect, b[i]));
+}
+
+function buildSurfaceFallbackCss(settings: CanvasSettings): string {
+  const layers = settings.backgroundImageLayers || '';
+  const url = settings.backgroundImage;
+  const hasImage = !!layers || !!url;
+  const color = settings.backgroundColor;
+  if (!hasImage && (!color || color === 'transparent')) return '';
+  // Zero specificity: any rule from the imported profile wins, so this only
+  // fills in when the profile itself does not paint the surface.
+  return `:where(html[data-bb-import-html]), :where(:host) {
+  background-color: ${color || 'transparent'};
+  ${layers ? `background-image: ${layers};` : hasImage ? `background-image: url('${url}');` : ''}
+  background-repeat: ${settings.backgroundRepeat || (hasImage ? 'repeat' : 'no-repeat')};
+  background-size: ${settings.backgroundSize || 'auto'};
+  background-position: ${settings.backgroundPosition || 'center top'};
+  background-attachment: ${settings.backgroundAttachment || 'scroll'};
+}
+`;
 }
 
 export const EditableImportedCanvas = forwardRef<
@@ -331,6 +564,11 @@ export const EditableImportedCanvas = forwardRef<
   const lastCommittedHtml = useRef<string>('');
   const overlayContainerRef = useRef<HTMLDivElement>(null);
   const suppressNextClickRef = useRef(false);
+  const lastTreeSignature = useRef<string>('');
+  const isMountedRef = useRef(true);
+  const resyncTimersRef = useRef<number[]>([]);
+  const debounceTimerRef = useRef<number | null>(null);
+  const fxCounterRef = useRef(1);
 
   const [selectedBbId, setSelectedBbId] = useState<string | null>(null);
   // Extra bbIds added by Shift+Click. Primary selection stays in selectedBbId.
@@ -764,7 +1002,7 @@ export const EditableImportedCanvas = forwardRef<
       wrapper.className = 'panel details_panel';
       wrapper.id = 'id_details';
       wrapper.setAttribute('data-bb-id', `bb-details-panel-${stamp}`);
-      wrapper.innerHTML = `<h2 id="details_title" class="2170553" data-bb-id="bb-details-title-${stamp}">Profile Details</h2><input type="hidden" id="avatarnonce" value="" data-bb-id="bb-details-nonce-${stamp}"><p data-bb-id="bb-details-avatar-wrap-${stamp}"><img src="" alt="Avatar" width="120" height="150" data-bb-id="bb-details-avatar-${stamp}"></p><div class="forum_userstatus" data-bb-id="bb-details-status-${stamp}"><div class="statuslinks" data-bb-id="bb-details-statuslinks-${stamp}"><div class="pushBox" data-uid="" data-bb-id="bb-details-pushbox-${stamp}">&nbsp;</div><span class="online" data-bb-id="bb-details-online-${stamp}">Online</span></div></div><p data-bb-id="bb-details-lastlogin-${stamp}"><strong data-bb-id="bb-details-lastlogin-label-${stamp}">Last Login:</strong> </p><p data-bb-id="bb-details-registered-${stamp}"><strong data-bb-id="bb-details-registered-label-${stamp}">Registered:</strong> </p>`;
+      wrapper.innerHTML = `<h2 id="details_title" class="2170553" data-bb-id="bb-details-title-${stamp}">Profile Details</h2><input type="hidden" id="avatarnonce" value="" data-bb-id="bb-details-nonce-${stamp}"><p data-bb-id="bb-details-avatar-wrap-${stamp}"><img src="${maleAvatarUrl}" alt="Male avatar (default)" width="120" height="150" data-bb-id="bb-details-avatar-${stamp}"></p><div class="forum_userstatus" data-bb-id="bb-details-status-${stamp}"><div class="statuslinks" data-bb-id="bb-details-statuslinks-${stamp}"><div class="pushBox" data-uid="" data-bb-id="bb-details-pushbox-${stamp}">&nbsp;</div><span class="online" data-bb-id="bb-details-online-${stamp}">Online</span></div></div><p data-bb-id="bb-details-lastlogin-${stamp}"><strong data-bb-id="bb-details-lastlogin-label-${stamp}">Last Login:</strong> </p><p data-bb-id="bb-details-registered-${stamp}"><strong data-bb-id="bb-details-registered-label-${stamp}">Registered:</strong> </p>`;
       return wrapper;
     }
 
@@ -947,9 +1185,189 @@ export const EditableImportedCanvas = forwardRef<
     dd.setAttribute('data-comment-id', commentId);
     dd.setAttribute('data-user-id', userId);
     dd.setAttribute('data-bb-id', `bb-comment-dd-${stamp}`);
-    dd.innerHTML = `<p class="deletecomment" data-bb-id="bb-comment-actions-${stamp}"><a href="#" class="profile-delete-comment" data-bb-id="bb-comment-delete-${stamp}">Delete</a><br><a href="#" data-bb-id="bb-comment-back-${stamp}">Comment Back</a></p><div class="dropBox" data-bb-id="bb-comment-dropbox-${stamp}"><img src="" alt="" class="avatarImage" width="48" height="48" data-bb-id="bb-comment-avatar-${stamp}"></div><div class="postcontent" data-bb-id="bb-comment-content-${stamp}">New imported comment content.</div>`;
+    dd.innerHTML = `<p class="deletecomment" data-bb-id="bb-comment-actions-${stamp}"><a href="#" class="profile-delete-comment" data-bb-id="bb-comment-delete-${stamp}">Delete</a><br><a href="#" data-bb-id="bb-comment-back-${stamp}">Comment Back</a></p><div class="dropBox" data-bb-id="bb-comment-dropbox-${stamp}"><img src="${femaleAvatarUrl}" alt="Female avatar (default)" class="avatarImage" width="48" height="48" data-bb-id="bb-comment-avatar-${stamp}"></div><div class="postcontent" data-bb-id="bb-comment-content-${stamp}">New imported comment content.</div>`;
 
     return { dt, dd };
+  };
+
+  /* ---------------------------------------------------------------------- */
+  /* Effects (clip / mask / animation) + absolute plane                      */
+  /* ---------------------------------------------------------------------- */
+
+  const EFFECTS_STYLE_ID = 'bb-effects';
+  const effectsCssRef = useRef<string>('');
+
+  /** Write pending keyframes/hover rules into the shadow root (exported in <head>). */
+  const syncEffectsStyle = () => {
+    const shadow = shadowRef.current;
+    if (!shadow) return;
+    let styleEl = shadow.querySelector(`#${EFFECTS_STYLE_ID}`) as HTMLStyleElement | null;
+    if (!effectsCssRef.current.trim()) {
+      styleEl?.remove();
+      return;
+    }
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = EFFECTS_STYLE_ID;
+      // Marked as a head node so serialization keeps it in the exported <head>.
+      styleEl.setAttribute(HEAD_NODE_MARK, '');
+      const editorStyle = shadow.querySelector(`[${EDITOR_STYLE_MARK}]`);
+      if (editorStyle) shadow.insertBefore(styleEl, editorStyle);
+      else shadow.appendChild(styleEl);
+    }
+    styleEl.textContent = effectsCssRef.current;
+  };
+
+  /** Stable selector for the CSS rules we generate (id first, then a fx class). */
+  const selectorForFx = (el: HTMLElement): string => {
+    if (el.id) return `#${el.id}`;
+    const existing = Array.from(el.classList).find((c) => c.startsWith('bbfx-'));
+    if (existing) return `.${existing}`;
+    const generated = `bbfx-${fxCounterRef.current++}`;
+    el.classList.add(generated);
+    return `.${generated}`;
+  };
+
+  /** Replace (or clear) the hover rule for a node inside the effects stylesheet. */
+  const animationNameFor = (el: HTMLElement, declaration?: string | null): string => {
+    if (declaration) {
+      const match = declaration.match(/animation(?:-name)?\s*:\s*([A-Za-z0-9_-]+)/i);
+      if (match) return match[1];
+    }
+    return el.style.animationName || '';
+  };
+
+  const setHoverRule = (el: HTMLElement, declaration: string | null) => {
+    const selector = selectorForFx(el);
+    const withoutBlock = removeFxBlock(effectsCssRef.current, selector);
+    if (!declaration) {
+      effectsCssRef.current = withoutBlock;
+      return;
+    }
+    const pendingName = animationNameFor(el, declaration);
+    const keyframes = pendingName && !hasKeyframes(withoutBlock, pendingName)
+      ? `${keyframesFor(pendingName)}\n`
+      : '';
+    effectsCssRef.current =
+      `${withoutBlock}${withoutBlock ? '\n\n' : ''}/* fx:${selector} */\n${keyframes}${selector}:hover {\n  ${declaration}\n}\n/* /fx */`;
+  };
+
+  const computeEffects = (bbId: string): ImportedNodeEffects | null => {
+    const el = findElementByBbId(bbId);
+    if (!el) return null;
+    const computed = window.getComputedStyle(el);
+    const inlineAnimation = (el.style.animation || el.style.animationName || '').trim();
+    const computedAnimation = computed.animationName && computed.animationName !== 'none'
+      ? `${computed.animationName} ${computed.animationDuration} ${computed.animationTimingFunction} ${computed.animationDelay} ${computed.animationIterationCount} ${computed.animationDirection}`.trim()
+      : '';
+    const animation = inlineAnimation || computedAnimation;
+    const fxSelectors = [el.id ? `#${el.id}` : '', ...Array.from(el.classList).map((c) => `.${c}`)].filter(
+      Boolean
+    );
+    const hoverRule = fxSelectors.some((sel) => effectsCssRef.current.indexOf(`/* fx:${sel} */`) !== -1);
+    return {
+      clipPath: el.style.clipPath || (computed.clipPath === 'none' ? '' : computed.clipPath),
+      maskImage: el.style.maskImage || el.style.getPropertyValue('mask-image') || '',
+      webkitMaskImage:
+        el.style.getPropertyValue('-webkit-mask-image') || computed.getPropertyValue('-webkit-mask-image') || '',
+      animation,
+      animationName: animation ? animationNameFor(el) : '',
+      animationTrigger: hoverRule ? 'hover' : 'always',
+      position: computed.position,
+      isAbsolute: computed.position === 'absolute',
+      offsetParentId: (el.offsetParent as HTMLElement | null)?.id || '',
+    };
+  };
+
+  const applyEffects = (bbId: string, patch: ImportedEffectsPatch) => {
+    const el = findElementByBbId(bbId);
+    if (!el) return;
+
+    const set = (prop: string, value: string | null | undefined) => {
+      if (value === undefined) return; // untouched
+      if (value === null || value === '' || value === 'none') el.style.removeProperty(prop);
+      else el.style.setProperty(prop, value);
+    };
+
+    set('clip-path', patch.clipPath);
+    if (patch.maskImage !== undefined) {
+      set('mask-image', patch.maskImage);
+      set('-webkit-mask-image', patch.maskImage);
+    }
+    if (patch.animation !== undefined) {
+      set('animation', patch.animation);
+      if (patch.animation) {
+        const name = patch.animation.trim().split(/\s+/)[0];
+        if (!hasKeyframes(effectsCssRef.current, name)) {
+          effectsCssRef.current = `${effectsCssRef.current}${effectsCssRef.current ? '\n\n' : ''}${keyframesFor(name)}`;
+        }
+      }
+    }
+    if (patch.hoverAnimation !== undefined) {
+      setHoverRule(el, patch.hoverAnimation);
+    }
+    if (patch.animation !== undefined || patch.hoverAnimation !== undefined) {
+      el.setAttribute('data-bb-builder-local', '');
+    }
+
+    syncEffectsStyle();
+    commitToProfile();
+    refreshAfterMutation(bbId);
+  };
+
+  const makeAbsolute = (bbId: string) => {
+    const el = findElementByBbId(bbId);
+    if (!el) return;
+    if (window.getComputedStyle(el).position === 'absolute') return;
+
+    // Containing block for the absolute plane: the profile surface the element
+    // already lives in (#columns when nothing closer is positioned).
+    const containingBlock = findContainingBlock(el);
+    const cbRect = containingBlock.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+
+    el.setAttribute('data-bb-absolute', '');
+    el.style.position = 'absolute';
+    el.style.left = `${Math.round(rect.left - cbRect.left + containingBlock.scrollLeft)}px`;
+    el.style.top = `${Math.round(rect.top - cbRect.top + containingBlock.scrollTop)}px`;
+    if (!el.style.width) el.style.width = `${Math.round(rect.width)}px`;
+    if (!el.style.height && el.offsetHeight > 0) el.style.height = `${Math.round(rect.height)}px`;
+    el.style.boxSizing = 'border-box';
+    const computedZ = window.getComputedStyle(el).zIndex;
+    if (computedZ === 'auto') el.style.zIndex = String(100 + selectedBbIds.size);
+    el.setAttribute('data-bb-builder-local', '');
+
+    commitToProfile();
+    refreshAfterMutation(bbId);
+  };
+
+  const makeFlow = (bbId: string) => {
+    const el = findElementByBbId(bbId);
+    if (!el) return;
+
+    el.removeAttribute('data-bb-absolute');
+    ['position', 'left', 'top', 'width', 'height', 'box-sizing'].forEach((prop) =>
+      el.style.removeProperty(prop)
+    );
+    el.removeAttribute('data-bb-builder-local');
+
+    // Put it back in the column that matches its horizontal position.
+    const columns = getV2Columns();
+    if (columns.length === 3) {
+      const rect = el.getBoundingClientRect();
+      const target = columns.reduce((nearest, col) => {
+        const nr = nearest.getBoundingClientRect();
+        const cr = col.getBoundingClientRect();
+        return Math.abs(rect.left + rect.width / 2 - (cr.left + cr.width / 2)) <
+          Math.abs(rect.left + rect.width / 2 - (nr.left + nr.width / 2))
+          ? col
+          : nearest;
+      }, columns[0]);
+      if (el.parentElement !== target) target.appendChild(el);
+    }
+
+    commitToProfile();
+    refreshAfterMutation(bbId);
   };
 
   const nodeInfoFromElement = (el: HTMLElement): ImportedNodeInfo => {
@@ -1044,6 +1462,11 @@ export const EditableImportedCanvas = forwardRef<
         !(el.tagName === 'STYLE')
       )
       .map((el) => buildTreeFromElement(el as HTMLElement, 0));
+    // The ResizeObserver can fire in bursts (linked CSS landing, image decode,
+    // CSS animations). Skip the parent update when the tree is unchanged.
+    const signature = treeSignature(roots);
+    if (signature === lastTreeSignature.current) return;
+    lastTreeSignature.current = signature;
     onTreeChange(roots);
   }, [onTreeChange]);
 
@@ -1069,39 +1492,34 @@ export const EditableImportedCanvas = forwardRef<
 
     const overlayRect = (overlay || host).getBoundingClientRect();
 
-    if (!selectedBbId) {
-      setSelectionRect(null);
-    } else {
+    const nextSelectionRect: Rect | null = (() => {
+      if (!selectedBbId) return null;
       const el = findElementByBbId(selectedBbId);
-      if (!el) {
-        setSelectionRect(null);
-      } else {
-        const rect = el.getBoundingClientRect();
-        setSelectionRect({
-          left: rect.left - overlayRect.left,
-          top: rect.top - overlayRect.top,
-          width: rect.width,
-          height: rect.height,
-        });
-      }
-    }
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        left: rect.left - overlayRect.left,
+        top: rect.top - overlayRect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    })();
+    // Bail out when nothing moved — prevents a re-render per animation frame.
+    setSelectionRect((prev) => (sameRect(prev, nextSelectionRect) ? prev : nextSelectionRect));
 
-    if (!inspectedBbId || inspectedBbId === selectedBbId) {
-      setInspectRect(null);
-    } else {
+    const nextInspectRect: Rect | null = (() => {
+      if (!inspectedBbId || inspectedBbId === selectedBbId) return null;
       const inspectedEl = findElementByBbId(inspectedBbId);
-      if (!inspectedEl) {
-        setInspectRect(null);
-      } else {
-        const rect = inspectedEl.getBoundingClientRect();
-        setInspectRect({
-          left: rect.left - overlayRect.left,
-          top: rect.top - overlayRect.top,
-          width: rect.width,
-          height: rect.height,
-        });
-      }
-    }
+      if (!inspectedEl) return null;
+      const rect = inspectedEl.getBoundingClientRect();
+      return {
+        left: rect.left - overlayRect.left,
+        top: rect.top - overlayRect.top,
+        width: rect.width,
+        height: rect.height,
+      };
+    })();
+    setInspectRect((prev) => (sameRect(prev, nextInspectRect) ? prev : nextInspectRect));
 
     const rects = Array.from(selectedBbIds)
       .filter((bbId) => bbId !== selectedBbId)
@@ -1117,8 +1535,8 @@ export const EditableImportedCanvas = forwardRef<
           height: rect.height,
         };
       })
-      .filter(Boolean) as Array<{ bbId: string; left: number; top: number; width: number; height: number }>;
-    setMultiSelectionRects(rects);
+      .filter(Boolean) as MultiRect[];
+    setMultiSelectionRects((prev) => (sameMultiRects(prev, rects) ? prev : rects));
   }, [selectedBbId, selectedBbIds, inspectedBbId, findElementByBbId]);
 
   const parseCssPixels = (value: string): number => {
@@ -1172,7 +1590,8 @@ export const EditableImportedCanvas = forwardRef<
       const rect = (col as HTMLElement).getBoundingClientRect();
       maxBottom = Math.max(maxBottom, rect.bottom - bodyRect.top);
     });
-    setContentBottomHeight(Math.max(1, Math.ceil(maxBottom)));
+    const nextHeight = Math.max(1, Math.ceil(maxBottom));
+    setContentBottomHeight((prev) => (prev === nextHeight ? prev : nextHeight));
   }, []);
 
   const refreshAfterMutation = (bbId?: string) => {
@@ -1255,6 +1674,11 @@ export const EditableImportedCanvas = forwardRef<
       root.removeAttribute('data-bb-selected');
       root.removeAttribute('data-bb-editing');
       root.removeAttribute('data-bb-moving');
+      // Editor-only plane marker; the absolute positioning itself lives in the
+      // element's inline style (and `bbfx-*` classes stay: exported CSS uses them).
+      root.removeAttribute('data-bb-absolute');
+      root.removeAttribute('data-bb-import-html');
+      root.removeAttribute('data-bb-import-head');
       root.removeAttribute('data-bb-builder-local');
       root.removeAttribute('data-bb-builder-group');
       root.removeAttribute('data-bb-builder-global');
@@ -1264,6 +1688,9 @@ export const EditableImportedCanvas = forwardRef<
       root.querySelectorAll('[data-bb-selected]').forEach((n) => n.removeAttribute('data-bb-selected'));
       root.querySelectorAll('[data-bb-editing]').forEach((n) => n.removeAttribute('data-bb-editing'));
       root.querySelectorAll('[data-bb-moving]').forEach((n) => n.removeAttribute('data-bb-moving'));
+      root.querySelectorAll('[data-bb-absolute]').forEach((n) => n.removeAttribute('data-bb-absolute'));
+      root.querySelectorAll('[data-bb-import-html]').forEach((n) => n.removeAttribute('data-bb-import-html'));
+      root.querySelectorAll('[data-bb-import-head]').forEach((n) => n.removeAttribute('data-bb-import-head'));
       root.querySelectorAll('[data-bb-builder-local]').forEach((n) => n.removeAttribute('data-bb-builder-local'));
       root.querySelectorAll('[data-bb-builder-group]').forEach((n) => n.removeAttribute('data-bb-builder-group'));
       root.querySelectorAll('[data-bb-builder-global]').forEach((n) => n.removeAttribute('data-bb-builder-global'));
@@ -1271,12 +1698,12 @@ export const EditableImportedCanvas = forwardRef<
       root.querySelectorAll('[contenteditable]').forEach((n) => n.removeAttribute('contenteditable'));
     };
 
+    // Head nodes (in original order) live inside the shadow <html><head>.
     const headParts: string[] = [];
-    Array.from(shadow.childNodes).forEach((node) => {
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
+    Array.from(shadow.querySelectorAll(`[${HEAD_NODE_MARK}]`)).forEach((node) => {
       const el = node as HTMLElement;
       if (el.tagName === 'STYLE' && el.hasAttribute(EDITOR_STYLE_MARK)) return;
-      if (!el.hasAttribute(HEAD_NODE_MARK)) return;
+      if (el.tagName === 'STYLE' && el.hasAttribute(SURFACE_STYLE_MARK)) return;
       const clone = el.cloneNode(true) as HTMLElement;
       stripEditorCruft(clone);
       headParts.push(clone.outerHTML);
@@ -1316,7 +1743,75 @@ export const EditableImportedCanvas = forwardRef<
     }
   }, [onCommit, emitTree]);
 
+  /**
+   * Request a layout resync (tree + content height + selection rects) after the
+   * browser has had a chance to reflow. Timers are tracked so they cannot fire
+   * after unmount or after the canvas was rebuilt for another profile.
+   */
+  const scheduleAssetResync = useCallback(
+    (prevScroll?: { x: number; y: number }) => {
+      const run = () => {
+        requestAnimationFrame(() => {
+          if (!isMountedRef.current) return;
+          const host = hostRef.current;
+          if (host && prevScroll) {
+            host.scrollLeft = prevScroll.x;
+            host.scrollTop = prevScroll.y;
+          }
+          emitTree();
+          measureContentBottom();
+          recomputeSelectionRect();
+        });
+      };
+
+      const clearScheduled = () => {
+        resyncTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+        resyncTimersRef.current = [];
+        debounceTimerRef.current = null;
+      };
+
+      if (prevScroll) {
+        // After a (re)build: restore scroll now, then re-measure as linked CSS,
+        // images and webfonts settle. Any stale timer from the previous build is
+        // dropped so timers cannot accumulate.
+        clearScheduled();
+        run();
+        [150, 600, 1200].forEach((delay) => {
+          const id = window.setTimeout(() => {
+            resyncTimersRef.current = resyncTimersRef.current.filter((t) => t !== id);
+            run();
+          }, delay);
+          resyncTimersRef.current.push(id);
+        });
+        return;
+      }
+
+      // Steady state (ResizeObserver bursts / asset events): collapse to one
+      // deferred pass instead of one per event.
+      if (debounceTimerRef.current !== null) return;
+      debounceTimerRef.current = window.setTimeout(() => {
+        debounceTimerRef.current = null;
+        run();
+      }, 80);
+    },
+    [emitTree, measureContentBottom, recomputeSelectionRect]
+  );
+
   // ---- Shadow DOM lifecycle -----------------------------------------------
+
+  // Track mount state + release deferred resync timers when the canvas goes away.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      resyncTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      resyncTimersRef.current = [];
+      if (debounceTimerRef.current !== null) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -1346,7 +1841,21 @@ export const EditableImportedCanvas = forwardRef<
     // as possible. Complex Gaia layouts depend heavily on stylesheet order.
     shadow.innerHTML = '';
 
-    const stylesheetLinks: HTMLLinkElement[] = [];
+    // The imported page keeps its real <html>/<body> pair inside the shadow
+    // tree: page-level selectors (`html`, `body#viewer`, `html body …`) and
+    // background propagation then behave exactly as they do in a browser, and
+    // the profile CSS is used verbatim — no selector rewriting.
+    const htmlShell = document.createElement('html') as HTMLElement;
+    htmlShell.setAttribute('data-bb-import-html', '');
+    if (doc.documentElement) {
+      Array.from(doc.documentElement.attributes).forEach((attr) => {
+        htmlShell.setAttribute(attr.name, attr.value);
+      });
+    }
+
+    const headShell = document.createElement('head');
+    headShell.setAttribute('data-bb-import-head', '');
+
     Array.from(doc.head?.childNodes || []).forEach((node) => {
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       const el = node as HTMLElement;
@@ -1356,26 +1865,17 @@ export const EditableImportedCanvas = forwardRef<
       clone.setAttribute(HEAD_NODE_MARK, '');
 
       if (clone.tagName === 'STYLE') {
-        clone.textContent = adaptImportedCssForShadow(clone.textContent || '');
+        clone.textContent = prepareImportedCssForShadow(clone.textContent || '');
       }
-      if (clone.tagName === 'LINK' && (clone as HTMLLinkElement).rel === 'stylesheet') {
-        stylesheetLinks.push(clone as HTMLLinkElement);
-      }
-      shadow.appendChild(clone);
+      headShell.appendChild(clone);
     });
 
-    // Editor chrome styles must come after imported styles so outlines are visible.
-    const editorStyle = document.createElement('style');
-    editorStyle.setAttribute(EDITOR_STYLE_MARK, '');
-    editorStyle.textContent = EDITOR_CSS;
-    shadow.appendChild(editorStyle);
-
-    // Fallback adapted CSS only if there were no head style/link nodes at all.
-    if (!shadow.querySelector(`[${HEAD_NODE_MARK}]`)) {
+    // Fallback CSS only if there were no head style/link nodes at all.
+    if (!headShell.querySelector(`[${HEAD_NODE_MARK}]`)) {
       const fallbackStyle = document.createElement('style');
       fallbackStyle.setAttribute(HEAD_NODE_MARK, '');
-      fallbackStyle.textContent = adaptImportedCssForShadow(profile.rawCss || '');
-      shadow.appendChild(fallbackStyle);
+      fallbackStyle.textContent = prepareImportedCssForShadow(profile.rawCss || '');
+      headShell.appendChild(fallbackStyle);
     }
 
     const bodyShell = document.createElement('body');
@@ -1386,51 +1886,90 @@ export const EditableImportedCanvas = forwardRef<
       });
     }
     bodyShell.innerHTML = bodyContent;
-    shadow.appendChild(bodyShell);
+
+    htmlShell.appendChild(headShell);
+    htmlShell.appendChild(bodyShell);
+    shadow.appendChild(htmlShell);
+
+    // Scraped background (often a CSS `background:` rule rather than an <img>)
+    // is applied as a zero-specificity base layer so it renders even when the
+    // original selector cannot match inside this shadow root. Imported rules
+    // always win over it.
+    // If browser-measured source CSS already paints the page, don't stack a
+    // second synthetic background over it (notably on repeating body images).
+    const surfaceCss = settings.backgroundVerified ? '' : buildSurfaceFallbackCss(settings);
+    if (surfaceCss) {
+      const surfaceStyle = document.createElement('style');
+      surfaceStyle.setAttribute(SURFACE_STYLE_MARK, '');
+      surfaceStyle.textContent = surfaceCss;
+      shadow.appendChild(surfaceStyle);
+    }
+
+    // Editor chrome styles must come after imported styles so outlines are visible.
+    const editorStyle = document.createElement('style');
+    editorStyle.setAttribute(EDITOR_STYLE_MARK, '');
+    editorStyle.textContent = EDITOR_CSS;
+    shadow.appendChild(editorStyle);
+
     ensureBbIds(bodyShell);
 
+    // Re-attach the effect CSS (keyframes / hover rules) — the rebuild cleared
+    // the shadow root, and these rules are referenced by exported markup.
+    syncEffectsStyle();
+
     lastCommittedHtml.current = rawHtml;
+    lastTreeSignature.current = '';
+    scheduleAssetResync(prevScroll);
+  }, [profile.rawHtml, profile.rawCss, scheduleAssetResync]);
 
-    const syncLayoutAfterAssets = () => {
-      requestAnimationFrame(() => {
-        if (hostRef.current) {
-          hostRef.current.scrollLeft = prevScroll.x;
-          hostRef.current.scrollTop = prevScroll.y;
-        }
-        emitTree();
-        measureContentBottom();
-        recomputeSelectionRect();
-      });
-    };
+  /**
+   * Re-measure after async assets settle (linked CSS, image decode, fonts) and
+   * on layout changes inside #columns. Complex imported profiles depend on all
+   * of them. Owns its listeners so a rebuild cannot leave them dangling, and
+   * clears its timers on unmount.
+   */
+  useEffect(() => {
+    const shadow = shadowRef.current;
+    if (!shadow) return;
+    const bodyShell = shadow.querySelector('body[data-bb-import-body]') as HTMLElement | null;
+    if (!bodyShell) return;
 
-    // Re-measure after linked CSS and images load; complex profiles depend on both.
+    const sync = () => scheduleAssetResync();
+    const stylesheetLinks = Array.from(shadow.querySelectorAll(`link[rel="stylesheet"]`));
     stylesheetLinks.forEach((link) => {
-      link.addEventListener('load', syncLayoutAfterAssets, { once: true });
-      link.addEventListener('error', syncLayoutAfterAssets, { once: true });
-    });
-    bodyShell.querySelectorAll('img').forEach((img) => {
-      img.addEventListener('load', syncLayoutAfterAssets, { once: true });
-      img.addEventListener('error', syncLayoutAfterAssets, { once: true });
+      link.addEventListener('load', sync);
+      link.addEventListener('error', sync);
     });
 
-    // Watch for layout changes inside #columns as CSS resolves.
-    const columnsObserver = new ResizeObserver(() => syncLayoutAfterAssets());
+    const images = Array.from(bodyShell.querySelectorAll('img'));
+    images.forEach((img) => {
+      img.addEventListener('load', sync);
+      img.addEventListener('error', sync);
+    });
+
+    const columnsObserver = new ResizeObserver(sync);
     const observedColumns = bodyShell.querySelector('#columns') as HTMLElement | null;
     if (observedColumns) {
       columnsObserver.observe(observedColumns);
-      observedColumns.querySelectorAll('.column').forEach((col) => columnsObserver.observe(col as Element));
+      observedColumns
+        .querySelectorAll('.column')
+        .forEach((col) => columnsObserver.observe(col as Element));
     }
 
-    // Restore immediately, then again after async assets settle.
-    syncLayoutAfterAssets();
-    window.setTimeout(syncLayoutAfterAssets, 150);
-    window.setTimeout(syncLayoutAfterAssets, 600);
-    window.setTimeout(syncLayoutAfterAssets, 1200);
+    sync();
 
     return () => {
+      stylesheetLinks.forEach((link) => {
+        link.removeEventListener('load', sync);
+        link.removeEventListener('error', sync);
+      });
+      images.forEach((img) => {
+        img.removeEventListener('load', sync);
+        img.removeEventListener('error', sync);
+      });
       columnsObserver.disconnect();
     };
-  }, [profile.rawHtml, profile.rawCss, recomputeSelectionRect, emitTree, measureContentBottom]);
+  }, [profile.rawHtml, profile.rawCss, scheduleAssetResync]);
 
   // ---- Event handlers on the shadow root ----------------------------------
 
@@ -1623,7 +2162,13 @@ export const EditableImportedCanvas = forwardRef<
       moveAction.hasMovedPastThreshold = true;
       el.setAttribute('data-bb-moving', '');
       window.getSelection()?.removeAllRanges();
-      relocateComponentByPointer(moveAction.bbId, e.clientX, e.clientY);
+      if (isAbsoluteElement(el)) {
+        // On the absolute plane the component is dragged freely (page coords).
+        el.style.left = `${Math.round(moveAction.originalLeft + dx)}px`;
+        el.style.top = `${Math.round(moveAction.originalTop + dy)}px`;
+      } else {
+        relocateComponentByPointer(moveAction.bbId, e.clientX, e.clientY);
+      }
       recomputeSelectionRect();
     };
 
@@ -1667,11 +2212,15 @@ export const EditableImportedCanvas = forwardRef<
   }, [recomputeSelectionRect]);
 
   // Poll for size changes on the selected element (handles style edits, animations, etc.)
+  // `recomputeSelectionRect` only commits state when a rect actually moved, and
+  // the loop parks itself while the tab is hidden.
   useEffect(() => {
     if (!selectedBbId) return;
     let raf = 0;
     const tick = () => {
-      recomputeSelectionRect();
+      // Pause while the tab is actually hidden; 'prerender' (and any other
+      // non-visible state that still reports layout) stays live.
+      if (document.visibilityState !== 'hidden') recomputeSelectionRect();
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -2004,6 +2553,22 @@ export const EditableImportedCanvas = forwardRef<
         commitToProfile();
         refreshAfterMutation(bbId);
       },
+      computeEffects(bbId: string) {
+        return computeEffects(bbId);
+      },
+      applyEffects(bbId: string, patch: ImportedEffectsPatch) {
+        applyEffects(bbId, patch);
+      },
+      makeAbsolute(bbId: string) {
+        makeAbsolute(bbId);
+      },
+      makeFlow(bbId: string) {
+        makeFlow(bbId);
+      },
+      isAbsolute(bbId: string) {
+        const el = findElementByBbId(bbId);
+        return el ? isAbsoluteElement(el) : false;
+      },
       applyStyleToChildren(bbId: string, selector: string, styleAttr: string) {
         const el = findElementByBbId(bbId);
         if (!el || !selector.trim() || !styleAttr.trim()) return 0;
@@ -2101,7 +2666,13 @@ export const EditableImportedCanvas = forwardRef<
   const mobileFitScale = isMobileViewport ? committedSize.width / layoutWidth : 1;
   const contentScale = mobileFitScale * zoom;
   const actualContentHeight = contentBottomHeight || committedSize.height;
-  const visibleHeight = Math.min(committedSize.height, actualContentHeight);
+  // Imported profiles are rendered in the canvas viewport, not squeezed to the
+  // measured content height. A browser paints the page surface (`html { … }`,
+  // the propagated canvas background) across the whole viewport, and that
+  // surface is usually what the author sees as "the profile background" —
+  // shrinking the box would make it invisible for profiles whose body box is
+  // shorter than the page.
+  const visibleHeight = committedSize.height;
   const hostHeight = isMobileViewport ? visibleHeight / mobileFitScale : visibleHeight;
 
   return (
@@ -2113,6 +2684,16 @@ export const EditableImportedCanvas = forwardRef<
         style={{
           width: `${Math.max(1, layoutWidth * contentScale)}px`,
           height: `${Math.max(1, visibleHeight * zoom)}px`,
+          // Scraped surface (usually a CSS background, not an <img>) as a
+          // fallback behind the shadow DOM content.
+          backgroundColor: settings.backgroundColor || (settings.backgroundImage ? 'transparent' : undefined),
+          backgroundImage: settings.backgroundImage
+            ? `url('${settings.backgroundImage}')`
+            : undefined,
+          backgroundRepeat: settings.backgroundRepeat || 'no-repeat',
+          backgroundSize: settings.backgroundSize || 'cover',
+          backgroundPosition: settings.backgroundPosition || 'center top',
+          backgroundAttachment: settings.backgroundAttachment || 'scroll',
         }}
         onDragOver={(e) => {
           if (e.dataTransfer.types.includes('application/imported-dedicated-kind')) {
@@ -2671,6 +3252,38 @@ export const EditableImportedCanvas = forwardRef<
               />
             )}
 
+            <ContextButton
+              label={
+                findElementByBbId(contextMenu.bbId)?.hasAttribute('data-bb-absolute')
+                  ? 'Return to Flow'
+                  : 'Make Absolute'
+              }
+              icon={<Move className="w-3.5 h-3.5" />}
+              onClick={() => {
+                const el = findElementByBbId(contextMenu.bbId);
+                if (el?.hasAttribute('data-bb-absolute')) makeFlow(contextMenu.bbId);
+                else makeAbsolute(contextMenu.bbId);
+                onSelectNode(el ? nodeInfoFromElement(el) : null);
+                setContextMenu(null);
+              }}
+            />
+            <ContextButton
+              label="Clear Clip / Mask / Animation"
+              icon={<Eraser className="w-3.5 h-3.5" />}
+              onClick={() => {
+                applyEffects(contextMenu.bbId, {
+                  clipPath: null,
+                  maskImage: null,
+                  animation: null,
+                  hoverAnimation: null,
+                });
+                window.setTimeout(() => {
+                  const el = findElementByBbId(contextMenu.bbId);
+                  if (el) onSelectNode(nodeInfoFromElement(el));
+                }, 0);
+                setContextMenu(null);
+              }}
+            />
             <ContextButton
               label="Select Parent"
               icon={<ChevronUp className="w-3.5 h-3.5" />}

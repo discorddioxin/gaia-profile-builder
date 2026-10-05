@@ -16,13 +16,14 @@ import {
   Wand2,
   FileCode,
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { ProfileElement, CanvasSettings } from '../types/profile';
 import {
   importProfileFromUrl,
   importProfileFromHtml,
   ImportResult,
 } from '../utils/profileImporter';
+import { celebrate } from '../utils/celebrate';
+import { extractCanonicalUrl, formatBytes, readTextFile } from '../utils/importFile';
 
 interface ImportModalProps {
   onClose: () => void;
@@ -85,6 +86,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
   const [error, setError] = useState<string>('');
   const [result, setResult] = useState<ImportResult | null>(null);
   const [initialRenderMode, setInitialRenderMode] = useState<'canvas' | 'raw'>('canvas');
+  const [loadedFile, setLoadedFile] = useState<{ name: string; size: number } | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   const resetResult = () => {
     setResult(null);
@@ -111,14 +115,49 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
       setStatus('success');
       // Editable Canvas now renders the same DOM/CSS as Faithful HTML.
       setInitialRenderMode('canvas');
-      celebrate();
+      celebrateImport();
     } catch (err) {
       setStatus('error');
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const handleParseHtml = () => {
+  /**
+   * Load a page the user saved from their own browser (Ctrl/⌘+S or View Source).
+   * This is the reliable route for profiles behind a session — public CORS
+   * proxies only ever see the logged-out page (401/403).
+   */
+  const handleLoadFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    setError('');
+    setResult(null);
+    setStatus('idle');
+    try {
+      const text = await readTextFile(file);
+      if (!text.trim()) {
+        setStatus('error');
+        setError(`${file.name} is empty — save the profile page again (Webpage, HTML only works too).`);
+        return;
+      }
+      setHtmlInput(text);
+      setLoadedFile({ name: file.name, size: file.size || text.length });
+      const canonical = extractCanonicalUrl(text);
+      if (canonical && !htmlSourceUrl.trim()) setHtmlSourceUrl(canonical);
+      setProgressMsg(
+        `Loaded ${file.name} (${formatBytes(file.size || text.length)})` +
+          (canonical ? ` · source URL detected: ${canonical}` : ' · no canonical URL found — add the profile URL below')
+      );
+    } catch (err) {
+      setStatus('error');
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** True when a URL needs the user's own session (public proxies get 401/403). */
+  const needsLoggedInBrowser = (value: string) =>
+    /gaiaonline\.com|gaia\.online/i.test(value) || /\b(401|403)\b/.test(error);
+
+  const handleParseHtml = async () => {
     if (!htmlInput.trim()) return;
     setStatus('loading');
     setError('');
@@ -127,7 +166,9 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
 
     try {
       const source = htmlSourceUrl.trim() || undefined;
-      const importResult = importProfileFromHtml(htmlInput, source);
+      const importResult = await importProfileFromHtml(htmlInput, source, (msg) =>
+        setProgressMsg(msg)
+      );
       setResult(importResult);
       setStatus('success');
       setInitialRenderMode('canvas');
@@ -138,17 +179,13 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
     }
   };
 
-  const celebrate = () => {
-    try {
-      confetti({
-        particleCount: 40,
-        spread: 65,
-        origin: { y: 0.6 },
-        colors: ['#06b6d4', '#6366f1', '#a855f7'],
-      });
-    } catch {
-      /* ignore */
-    }
+  const celebrateImport = () => {
+    celebrate({
+      particleCount: 40,
+      spread: 65,
+      origin: { y: 0.6 },
+      colors: ['#06b6d4', '#6366f1', '#a855f7'],
+    });
   };
 
   const handlePasteFromClipboard = async () => {
@@ -363,19 +400,73 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                 </div>
               </div>
 
-              <textarea
-                value={htmlInput}
-                onChange={(e) => setHtmlInput(e.target.value)}
-                placeholder={
-                  '<style>...</style>\n<div class="profile_container">\n  <span style="color: #1">...</span>\n</div>'
-                }
-                spellCheck={false}
-                className="w-full h-48 sm:h-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none font-mono resize-none"
-              />
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragActive(true);
+                }}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragActive(false);
+                  void handleLoadFile(e.dataTransfer?.files?.[0]);
+                }}
+                className={`relative rounded-lg border ${
+                  dragActive ? 'border-indigo-400 bg-indigo-500/10' : 'border-transparent'
+                }`}
+              >
+                <textarea
+                  value={htmlInput}
+                  onChange={(e) => {
+                    setHtmlInput(e.target.value);
+                    setLoadedFile(null);
+                  }}
+                  placeholder={
+                    'Drop the saved profile page here, or paste the markup.\n\n<style>...</style>\n<div class="profile_container">\n  <span style="color: #1">...</span>\n</div>'
+                  }
+                  spellCheck={false}
+                  className="w-full h-48 sm:h-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none font-mono resize-none"
+                />
+                {dragActive && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-slate-950/70 text-xs font-semibold text-indigo-200">
+                    Drop the saved page to load it
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".html,.htm,.xhtml,.txt,text/html,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    void handleLoadFile(e.target.files?.[0]);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 py-1 text-[11px] font-semibold text-slate-200 hover:border-indigo-500 hover:text-white transition-colors"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-indigo-300" />
+                  Load saved page (.html)
+                </button>
+                <span className="text-[10px] text-slate-500">
+                  Works for pages behind a login — save with Ctrl/⌘+S, then load the file here.
+                </span>
+              </div>
 
               <div className="flex items-center justify-between gap-2">
-                <div className="text-[10px] text-slate-500 font-mono">
-                  {htmlInput.length.toLocaleString()} chars
+                <div className="min-w-0 text-[10px] font-mono text-slate-500">
+                  <div className="truncate">{progressMsg || `${htmlInput.length.toLocaleString()} chars`}</div>
+                  {loadedFile && (
+                    <div className="truncate text-emerald-400/80">
+                      {loadedFile.name} · {formatBytes(loadedFile.size)}
+                      {htmlSourceUrl.trim() ? ` · base ${htmlSourceUrl.trim()}` : ' · no base URL'}
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -421,13 +512,33 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                   {error}
                 </div>
                 {tab === 'url' && (
-                  <button
-                    onClick={() => switchTab('html')}
-                    className="mt-2 inline-flex items-center gap-1 rounded bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-100 hover:bg-red-500/30"
-                  >
-                    <Code2 className="w-3 h-3" />
-                    Switch to &quot;Import with HTML&quot;
-                  </button>
+                  <div className="mt-2 space-y-2">
+                    {needsLoggedInBrowser(url) && (
+                      <ol className="list-decimal list-inside space-y-0.5 rounded bg-red-500/10 px-2 py-1.5 text-[10px] text-red-100/90">
+                        <li>
+                          Open the profile in your browser
+                          {/gaiaonline/i.test(url) ? ' while logged in to Gaia' : ''}
+                        </li>
+                        <li>
+                          Save the page: <b>Ctrl/⌘+S</b> → &quot;Webpage, HTML only&quot; (or View
+                          Source → select all → save)
+                        </li>
+                        <li>
+                          Switch to <b>Import with HTML</b> below and load that file
+                        </li>
+                      </ol>
+                    )}
+                    <button
+                      onClick={() => {
+                        if (url.trim()) setHtmlSourceUrl(url.trim());
+                        switchTab('html');
+                      }}
+                      className="inline-flex items-center gap-1 rounded bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-100 hover:bg-red-500/30"
+                    >
+                      <Code2 className="w-3 h-3" />
+                      Import with HTML (load the saved page)
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -456,6 +567,154 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                     tint="cyan"
                   />
                 </div>
+              </div>
+
+              {/* Scrape diagnostics: stylesheets, background, Gaia components */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 space-y-2.5">
+                <div className="text-[11px] font-semibold text-slate-200 flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                  Scrape Report
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[10px]">
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px]">Stylesheets</div>
+                    <div className="font-mono text-sm text-slate-100">
+                      {result.diagnostics.stylesheetsFetched}/{result.diagnostics.stylesheetsFound}
+                    </div>
+                    <div className="text-slate-500">
+                      inlined · {result.diagnostics.stylesheetUrls.filter((sh) => sh.from === 'import').length} @import
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px]">Background</div>
+                    <div className="font-mono text-sm text-slate-100 truncate">
+                      {result.diagnostics.background.detected
+                        ? result.diagnostics.background.image
+                          ? 'image (style)'
+                          : 'color (style)'
+                        : 'none'}
+                    </div>
+                    <div className="text-slate-500 truncate" title={result.diagnostics.background.source}>
+                      {result.diagnostics.background.source}
+                    </div>
+                    <div
+                      className={`mt-0.5 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[9px] ${
+                        result.diagnostics.backgroundVerified
+                          ? 'bg-emerald-500/15 text-emerald-300'
+                          : 'bg-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-2.5 h-2.5" />
+                      {result.diagnostics.backgroundVerified
+                        ? 'verified in rendered page'
+                        : 'parsed from CSS'}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <div className="text-slate-500 uppercase tracking-wider text-[9px]">Components</div>
+                    <div className="font-mono text-sm text-slate-100">{result.diagnostics.components.length}</div>
+                    <div className="text-slate-500">categories detected</div>
+                  </div>
+                </div>
+
+                {result.diagnostics.background.image && (
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <img
+                      src={result.diagnostics.background.image}
+                      alt="Detected background"
+                      className="h-10 w-16 object-cover border border-slate-700"
+                    />
+                    <div className="min-w-0 text-[10px]">
+                      <div className="font-semibold text-slate-200">Background resolved from CSS</div>
+                      <div className="truncate font-mono text-slate-500">
+                        {result.diagnostics.background.image}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {result.diagnostics.stylesheetUrls.length > 0 && (
+                  <details className="rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                    <summary className="cursor-pointer text-[10px] font-semibold text-slate-300">
+                      CSS chain — {(result.diagnostics.cssBytesInlined / 1024).toFixed(1)}KB inlined
+                      {result.diagnostics.stylesheetUrls.some((sh) => sh.label) && (
+                        <span className="ml-1 font-normal text-cyan-300">
+                          ·{' '}
+                          {Array.from(
+                            new Set(
+                              result.diagnostics.stylesheetUrls
+                                .map((sh) => sh.label)
+                                .filter(Boolean) as string[]
+                            )
+                          ).join(', ')}
+                        </span>
+                      )}
+                    </summary>
+                    <ul className="mt-1.5 space-y-1">
+                      {result.diagnostics.stylesheetUrls.map((sheet, idx) => (
+                        <li
+                          key={`${sheet.url}-${idx}`}
+                          className="flex items-start gap-1.5 font-mono text-[10px]"
+                        >
+                          <span
+                            className={
+                              sheet.ok
+                                ? 'shrink-0 text-emerald-400'
+                                : 'shrink-0 text-amber-400'
+                            }
+                            title={
+                              sheet.ok
+                                ? `inlined${sheet.bytes ? ` (${(sheet.bytes / 1024).toFixed(1)}KB)` : ''}`
+                                : 'blocked by CORS — the browser will retry the original <link>'
+                            }
+                          >
+                            {sheet.ok ? '●' : '○'}
+                          </span>
+                          <span className="shrink-0 rounded bg-slate-800 px-1 text-[9px] text-slate-300">
+                            {sheet.from}
+                          </span>
+                          {sheet.label && (
+                            <span className="shrink-0 rounded bg-cyan-500/15 px-1 text-[9px] text-cyan-200">
+                              {sheet.label}
+                            </span>
+                          )}
+                          <span className="min-w-0 truncate text-slate-400" title={sheet.url}>
+                            {sheet.url}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+
+                {result.diagnostics.components.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {result.diagnostics.components.map((component) => (
+                      <span
+                        key={component.kind}
+                        className="rounded bg-indigo-500/15 border border-indigo-500/30 px-1.5 py-0.5 text-[10px] font-mono text-indigo-200"
+                        title={`columns: ${component.columns.join(', ') || '—'} · ${component.panelIds.join(', ')}`}
+                      >
+                        {component.label} ×{component.count}
+                        {component.columns.length > 0 && (
+                          <span className="text-indigo-400/80"> · col {component.columns.join('/')}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {result.diagnostics.warnings.length > 0 && (
+                  <ul className="space-y-1 text-[10px] text-amber-300/90">
+                    {result.diagnostics.warnings.map((warning) => (
+                      <li key={warning} className="flex items-start gap-1.5">
+                        <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-400" />
+                        <span>{warning}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
               {/* Initial render mode picker */}

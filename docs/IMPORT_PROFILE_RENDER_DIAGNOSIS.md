@@ -183,3 +183,30 @@ If another complex imported profile still fails after the current linked-stylesh
 > Replace Shadow-DOM editable rendering with iframe-based editable rendering.
 
 That is the cleanest architectural resolution for high-fidelity complex-profile editing.
+
+---
+
+## Resolution (2026-10-02)
+
+The diagnosis above ("shadow DOM cannot host a page surface") was solved **inside
+the editable shadow canvas** instead of replacing it with an iframe:
+
+* The shadow root now contains a real `<html>` → `<head>` + `<body>` pair, so
+  `html`, `body`, `body#viewer`, `html body …` and background propagation all
+  match a document. Imported CSS text is used verbatim; only a
+  compound-initial `:root` is pointed at the shadow `<html>` element (in a
+  shadow tree `:root` addresses the shadow root, which paints nothing).
+* `@import` statements are inlined while importing (Chrome ignores `@import`
+  inside a shadow-root stylesheet), and every linked sheet is fetched,
+  labeled and inlined in document order.
+* The imported document is rendered once in a hidden iframe and its **computed**
+  surface (`html`, `body`, `#viewer`) is recorded, then re-declared at zero
+  specificity (`:where(html)`, `:where(body)`) so the real profile CSS always
+  wins. `CanvasSettings.backgroundImageLayers` keeps the exact multi-layer
+  value (gradients included).
+* The canvas keeps the profile's canvas height instead of shrinking to the
+  measured content height, so the page surface the author sees is the one that
+  renders.
+
+See `GAIA_FIRST_CODE_GENERATION.md` §9 for the pipeline and its verification
+(real-Chromium `scripts/verify/background-fidelity.mjs`, 34/34).

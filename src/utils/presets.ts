@@ -1,4 +1,5 @@
 import { ClipPoint, CustomComponent, ProfileElement, CanvasSettings } from '../types/profile';
+import { GaiaComponentKind, createGaiaPanelElement, xForColumn } from './gaiaSpec';
 
 export const CLIP_PRESETS: Record<string, { label: string; vertices: ClipPoint[] }> = {
   hexagon: {
@@ -149,6 +150,14 @@ export const ANIMATION_PRESETS = [
   { id: 'rainbowBorder', label: 'Chroma Hue Cycle', description: 'Cycling hue spectrum glow', icon: '🌈' },
   { id: 'fadeIn', label: 'Fade In Entrance', description: 'Smooth vertical reveal', icon: '👁️' },
   { id: 'cyberBlink', label: 'Terminal Blink', description: 'Authentic retro cursor blink', icon: '📟' },
+  { id: 'morphBlob', label: 'Blob Morph', description: 'Organic blob cycling through corner radii', icon: '🫧' },
+  { id: 'morphLiquid', label: 'Liquid Wobble', description: 'Soft pulsing blob with drifting radius', icon: '💧' },
+  { id: 'morphCorners', label: 'Corner Shift', description: 'Square to capsule corner transformation', icon: '🔲' },
+  { id: 'morphJelly', label: 'Jelly Squash', description: 'Squash-and-stretch elasticity', icon: '🍮' },
+  { id: 'tilt3d', label: '3D Tilt Sway', description: 'Panel sways on the Y and X axes', icon: '🎴' },
+  { id: 'flip3d', label: '3D Flip Card', description: 'Full Y-axis card flip with perspective', icon: '🃏' },
+  { id: 'swing3d', label: 'Hanging Swing', description: 'Top-hinged 3D pendulum swing', icon: '🕰️' },
+  { id: 'depthPop', label: 'Depth Pop', description: 'Pulses toward the viewer on the Z axis', icon: '🔭' },
 ];
 
 export const DEFAULT_CUSTOM_COMPONENTS: CustomComponent[] = [
@@ -516,10 +525,64 @@ export const DEFAULT_CUSTOM_COMPONENTS: CustomComponent[] = [
   },
 ];
 
+const GAIA_STARTER_SETTINGS: CanvasSettings = {
+  width: 1380,
+  height: 900,
+  backgroundColor: '#0b1020',
+  backgroundImage:
+    'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?w=1600&auto=format&fit=crop&q=70',
+  backgroundRepeat: 'repeat',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center top',
+  gridSnap: true,
+  gridSize: 10,
+  showGrid: false,
+  profileTitle: 'Gaia V2 Native Profile',
+  forumTheme: 'dark-cyber',
+};
+
+/**
+ * Starter profile built entirely from Gaia-supported components so the
+ * generated CSS targets real V2 panel classes and ids from the first click.
+ */
+function buildGaiaStarterElements(): ProfileElement[] {
+  const layout: Array<[GaiaComponentKind, 1 | 2 | 3]> = [
+    ['details', 1],
+    ['contact', 1],
+    ['equipment', 1],
+    ['about', 2],
+    ['comments', 2],
+    ['journal', 2],
+    ['wishlist', 3],
+    ['friends', 3],
+    ['badges', 3],
+  ];
+  const cursor = new Map<number, number>();
+  return layout.map(([kind, column], index) => {
+    const element = createGaiaPanelElement(kind, column, index, GAIA_STARTER_SETTINGS);
+    const row = cursor.get(column) || 0;
+    cursor.set(column, row + 1);
+    return {
+      ...element,
+      x: xForColumn(GAIA_STARTER_SETTINGS, column, element.width),
+      y: 40 + row * 24,
+      zIndex: index + 1,
+      hidden: false,
+    };
+  });
+}
+
 export const STARTER_PROFILES: Record<
   string,
   { name: string; description: string; settings: CanvasSettings; elements: ProfileElement[] }
 > = {
+  gaiaV2: {
+    name: 'Gaia V2 Native',
+    description:
+      'Built from Gaia-supported components only — Details, Contact, Comments, Friends, Badges and more, laid out in #columns.',
+    settings: GAIA_STARTER_SETTINGS,
+    elements: buildGaiaStarterElements(),
+  },
   cyberpunk: {
     name: 'Cyberpunk Netrunner 2099',
     description: 'High-tech dark profile with neon cyan/magenta styling and polygon clipping.',

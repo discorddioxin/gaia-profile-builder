@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 128" role="img" aria-label="Default female Gaia-style avatar">
+<defs><linearGradient id="skin" x2="0" y2="1"><stop stop-color="#ffe3bd"/><stop offset="1" stop-color="#e8ad7c"/></linearGradient><linearGradient id="hair" x2="1" y2="1"><stop stop-color="#8060a7"/><stop offset="1" stop-color="#b29acb"/></linearGradient></defs>
+<g stroke="#ca916a" stroke-width="1.5" stroke-linejoin="round">
+<!-- legs --> <path fill="url(#skin)" d="M36 75 31 94 34 107 27 116 17 120 17 124 37 124 45 116 47 101 51 87 54 105 60 116 59 123 71 123 74 119 68 105 66 88 62 74Z"/>
+<!-- torso and arms --> <path fill="url(#skin)" d="m35 44-8 6-2 11-6 12 3 3 7-7 3-10 3-4-1 15 4 11-1 10 10 4 11-3 6-6-4-12 2-15-4-9 7 9 2 9 7 8 4-3-5-11-2-12-9-8-9-4Z"/>
+<!-- neck --> <path fill="url(#skin)" d="M39 39h16v10l-8 7-8-7Z"/>
+<!-- long hair --> <path fill="url(#hair)" d="M28 25 31 12 42 5 57 7 67 17 68 38 73 52 67 63 61 46 35 47 30 60 24 54 28 42Z"/>
+<!-- face --> <path fill="url(#skin)" d="M34 17 40 10 54 10 62 18 62 32 57 41 48 45 39 41 34 33Z"/>
+<!-- bangs --> <path fill="url(#hair)" d="M31 22 32 13 41 7 56 8 65 16 67 24 59 20 53 22 47 17 40 23Z"/>
+<path fill="none" stroke="#d59b70" d="M39 29h3m12 0h3m-11 7q3 2 6 0"/>
+</g></svg>

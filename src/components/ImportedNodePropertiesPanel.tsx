@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Eraser,
+  Layers,
+  Scissors,
+  Sparkles,
   ChevronUp,
   Copy,
   MousePointerClick,
@@ -50,6 +54,14 @@ interface ImportedNodePropertiesPanelProps {
   onDeleteFootprint?: (bbId: string) => void;
   onAddBadge?: (bbId: string) => void;
   onDeleteBadge?: (bbId: string) => void;
+  /** Jump to another dock tab (clip/mask editor, animation studio). */
+  onOpenTab?: (tab: 'shape' | 'animation') => void;
+  /** Absolute-plane controls for the selected imported node. */
+  onMakeAbsolute?: (bbId: string) => void;
+  onMakeFlow?: (bbId: string) => void;
+  isAbsolute?: boolean;
+  hasEffects?: boolean;
+  onClearEffects?: (bbId: string) => void;
 }
 
 function parseStyle(style: string): Record<string, string> {
@@ -107,6 +119,12 @@ export const ImportedNodePropertiesPanel: React.FC<ImportedNodePropertiesPanelPr
   onDeleteFootprint,
   onAddBadge,
   onDeleteBadge,
+  onOpenTab,
+  onMakeAbsolute,
+  onMakeFlow,
+  isAbsolute = false,
+  hasEffects = false,
+  onClearEffects,
 }) => {
   const [classDraft, setClassDraft] = useState('');
   const [rawStyleDraft, setRawStyleDraft] = useState('');
@@ -142,6 +160,10 @@ export const ImportedNodePropertiesPanel: React.FC<ImportedNodePropertiesPanelPr
     const actions: Array<{ label: string; action: () => void; danger?: boolean }> = [];
     if (isComment) {
       actions.push({ label: 'Panel', action: () => onSelectCommentsPanel?.(node.bbId) });
+      actions.push({ label: 'Add Comment', action: () => onAddComment?.(node.bbId) });
+      if (role === 'comment-header' || role === 'comment-body') {
+        actions.push({ label: 'Delete Comment', action: () => onDeleteCommentThread?.(node.bbId), danger: true });
+      }
     }
     if (isWishlist) {
       actions.push({ label: 'Panel', action: () => onSelectWishlistPanel?.(node.bbId) });
@@ -165,6 +187,7 @@ export const ImportedNodePropertiesPanel: React.FC<ImportedNodePropertiesPanelPr
       if (role !== 'contact-panel' && role !== 'contact-title' && role !== 'contact-list') actions.push({ label: 'Delete Action', action: () => onDeleteContactAction?.(node.bbId), danger: true });
     }
     if (isFootprint) {
+      actions.push({ label: 'Add Visitor', action: () => onAddFootprint?.(node.bbId) });
       if (role !== 'footprints-panel' && role !== 'footprints-title') actions.push({ label: 'Delete Visitor', action: () => onDeleteFootprint?.(node.bbId), danger: true });
     }
     if (isBadge) {
@@ -230,6 +253,56 @@ export const ImportedNodePropertiesPanel: React.FC<ImportedNodePropertiesPanelPr
           )}
         </section>
       )}
+
+      <section className="border border-slate-800 bg-slate-950 p-3 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-slate-200">Effects &amp; Plane</span>
+          <span
+            className={`rounded px-1.5 py-0.5 font-mono text-[9px] ${
+              isAbsolute ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'
+            }`}
+          >
+            {isAbsolute ? 'absolute' : 'in flow'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            onClick={() => onOpenTab?.('shape')}
+            className="flex items-center justify-center gap-1.5 rounded bg-slate-800 px-2 py-1.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-700"
+          >
+            <Scissors className="h-3 w-3 text-indigo-400" />
+            Clip / Mask
+          </button>
+          <button
+            onClick={() => onOpenTab?.('animation')}
+            className="flex items-center justify-center gap-1.5 rounded bg-slate-800 px-2 py-1.5 text-[10px] font-semibold text-slate-200 hover:bg-slate-700"
+          >
+            <Sparkles className="h-3 w-3 text-pink-400" />
+            Animate
+          </button>
+          <button
+            onClick={() => (isAbsolute ? onMakeFlow?.(node.bbId) : onMakeAbsolute?.(node.bbId))}
+            disabled={!onMakeAbsolute && !onMakeFlow}
+            className={`col-span-2 flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-[10px] font-semibold disabled:opacity-40 ${
+              isAbsolute
+                ? 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                : 'bg-emerald-600/20 text-emerald-200 hover:bg-emerald-600/30'
+            }`}
+          >
+            <Layers className="h-3 w-3" />
+            {isAbsolute ? 'Return to Flow' : 'Make Absolute'}
+          </button>
+        </div>
+        {hasEffects && onClearEffects && (
+          <button
+            onClick={() => onClearEffects(node.bbId)}
+            className="flex w-full items-center justify-center gap-1.5 rounded border border-slate-800 px-2 py-1 text-[10px] text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+          >
+            <Eraser className="h-3 w-3" />
+            Clear clip / mask / animation
+          </button>
+        )}
+      </section>
 
       <div className="border border-slate-800 bg-slate-950 p-3">
         <div className="flex items-center justify-between gap-2">

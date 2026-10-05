@@ -59,7 +59,8 @@ export const ProfileTabs: React.FC<ProfileTabsProps> = ({
                 IMPORT
               </span>
             )}
-            {profiles.length > 1 && (
+            {/* The last tab can be closed too — the builder returns to its welcome screen. */}
+            {true && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();

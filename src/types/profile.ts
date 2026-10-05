@@ -1,3 +1,5 @@
+import type { GaiaComponentKind } from '../utils/gaiaSpec';
+
 export type ElementType =
   | 'text'
   | 'quote'
@@ -6,7 +8,29 @@ export type ElementType =
   | 'code'
   | 'clear'
   | 'link'
-  | 'box';
+  | 'box'
+  /** First-class Gaia V2 component (Comments, Friends, Details, …). */
+  | 'gaia-panel';
+
+/**
+ * Gaia-native configuration for an element. Present whenever the element is a
+ * dedicated Gaia-supported component, so code generation can target the real
+ * V2 panel structure (`.panel.comments_panel#id_comments`) instead of an
+ * arbitrary absolutely positioned box.
+ */
+export interface GaiaPanelConfig {
+  kind: GaiaComponentKind;
+  /** V2 column the panel belongs to. */
+  column: 1 | 2 | 3;
+  /** Panel heading text (rendered inside <h2>). */
+  title?: string;
+  /** Overrides the spec panel id when set (custom panels use id_custom_####). */
+  panelId?: string;
+  /** Extra classes appended to the panel root. */
+  extraClass?: string;
+  /** Raw HTML body override (custom panels keep arbitrary HTML). */
+  bodyHtml?: string;
+}
 
 export interface MaskConfig {
   enabled: boolean;
@@ -49,7 +73,22 @@ export type AnimationPreset =
   | 'rainbowBorder'
   | 'fadeIn'
   | 'scanline'
-  | 'cyberBlink';
+  | 'cyberBlink'
+  // Morphs (shape morphology — see src/utils/toolPresets.ts)
+  | 'morphBlob'
+  | 'morphLiquid'
+  | 'morphCorners'
+  | 'morphJelly'
+  // 3D presentation
+  | 'tilt3d'
+  | 'flip3d'
+  | 'swing3d'
+  | 'depthPop'
+  | 'orbit3d'
+  | 'cubeTurn'
+  | 'cardHover3d'
+  | 'roll3d'
+  | 'parallax3d';
 
 export interface AnimationConfig {
   enabled: boolean;
@@ -108,6 +147,9 @@ export interface ProfileElement {
 
   // Optional custom classes or tags
   customCss?: string;
+
+  // Gaia V2 component metadata — set when type === 'gaia-panel'
+  gaia?: GaiaPanelConfig;
 }
 
 export interface CustomComponent {
@@ -125,8 +167,14 @@ export interface CanvasSettings {
   height: number; // canvas height e.g. 960
   backgroundColor: string;
   backgroundImage?: string;
+  /** Exact multi-layer `background-image` value (gradients + urls), used by imported profiles. */
+  backgroundImageLayers?: string;
+  /** True when the imported html/body paint was measured from the source page. */
+  backgroundVerified?: boolean;
   backgroundRepeat?: string;
   backgroundSize?: string;
+  backgroundPosition?: string;
+  backgroundAttachment?: string;
   gridSnap: boolean;
   gridSize: number;
   showGrid: boolean;
@@ -150,11 +198,30 @@ export interface Profile {
   renderMode?: 'canvas' | 'raw'; // 'raw' displays imported HTML+CSS verbatim, 'canvas' shows reconstructed elements
 }
 
+export interface GaiaComponentUsage {
+  kind: string;
+  label: string;
+  column: 1 | 2 | 3;
+  panelId: string;
+  panelClass: string;
+  selector: string;
+}
+
 export interface TranspilerOutput {
+  /** `<div id="columns">…</div>` — the V2 column structure. */
   html: string;
+  /** Alias of `html`, kept for callers that ask for the column structure. */
+  columnsHtml: string;
   css: string;
+  /** BBCode, only produced for content Gaia accepts through a BBCode field. */
   bbcode: string;
+  /** False when the profile needs no BBCode at all (HTML panels are enough). */
+  bbcodeNeeded: boolean;
+  bbcodeReason: string;
   fullOutput: string;
+  fullDocument: string;
+  gaiaComponents: GaiaComponentUsage[];
+  /** Gaia components detected in the profile, by spec category. */
   mappings: Array<{
     bbcode: string;
     html: string;

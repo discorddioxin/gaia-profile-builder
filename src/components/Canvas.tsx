@@ -6,8 +6,36 @@ import {
   CustomComponent,
 } from '../types/profile';
 import { getClipPathCss, getMaskCss } from '../utils/bbcodeTranspiler';
+import {
+  columnForX,
+  buildPanelHtml,
+  GAIA_PANEL_BASE_CSS,
+  getGaiaComponent,
+  isGaiaComponentKind,
+} from '../utils/gaiaSpec';
 import { FloatingMicroBar } from './FloatingMicroBar';
 import { RotateCw, Lock, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
+
+function escapePreviewText(value: string): string {
+  return value.replace(/[&<>\"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[char] || char);
+}
+
+function buildGaiaPanelPreviewDocument(el: ProfileElement): string {
+  if (!el.gaia || !isGaiaComponentKind(el.gaia.kind)) return '';
+  const def = getGaiaComponent(el.gaia.kind);
+  const panelId = el.gaia.panelId || def.panelId || 'id_custom_1';
+  const title = escapePreviewText(el.gaia.title || el.content || def.defaultTitle);
+  const markup = buildPanelHtml(el.gaia.kind, {
+    index: 1,
+    title,
+    bodyHtml: el.gaia.bodyHtml || def.bodyHtml,
+    panelId,
+    extraStyle: `min-height:${el.height}px`,
+  });
+  const panelStyle = `#${panelId} { width:100%; min-height:${el.height}px; margin:0; box-sizing:border-box; background-color:${el.backgroundColor}; ${el.backgroundImage ? `background-image:url('${el.backgroundImage}');background-size:cover;background-position:center;` : ''} color:${el.color}; border:${el.borderWidth}px ${el.borderStyle} ${el.borderColor}; border-radius:${el.borderRadius}px; padding:${el.padding}px; box-shadow:${el.boxShadow}; font-family:${el.fontFamily}; font-size:${el.fontSize}px; }`;
+  const css = `html,body{margin:0;min-height:100%;background:transparent}body{padding:0}.panel{width:100%;margin:0;box-sizing:border-box}${GAIA_PANEL_BASE_CSS}\n${def.defaultCss}\n${panelStyle}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body>${markup}</body></html>`;
+}
 
 interface CanvasProps {
   elements: ProfileElement[];
@@ -320,6 +348,19 @@ export const Canvas: React.FC<CanvasProps> = ({
       }
     }
 
+    // Check if dropping a Gaia-supported component
+    const gaiaKind = e.dataTransfer.getData('application/gaia-component-kind');
+    if (gaiaKind && isGaiaComponentKind(gaiaKind)) {
+      const def = getGaiaComponent(gaiaKind);
+      const column = columnForX(settings, dropX);
+      onAddElement('gaia-panel', {
+        x: dropX,
+        y: dropY,
+        gaia: { kind: gaiaKind, column, title: def.defaultTitle },
+      });
+      return;
+    }
+
     // Check if dropping an element type
     const elementType = e.dataTransfer.getData(
       'application/profile-element-type'
@@ -483,7 +524,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                   }}
                   onDoubleClick={(e) => {
                     e.stopPropagation();
-                    if (['text', 'quote', 'code', 'link', 'box'].includes(el.type)) {
+                    if (['text', 'quote', 'code', 'link', 'box', 'gaia-panel'].includes(el.type)) {
                       setEditingId(el.id);
                     }
                   }}
@@ -507,18 +548,18 @@ export const Canvas: React.FC<CanvasProps> = ({
                   <div
                     className="w-full h-full overflow-hidden"
                     style={{
-                      backgroundColor: el.backgroundColor,
-                      backgroundImage: el.backgroundImage
+                      backgroundColor: el.type === 'gaia-panel' ? 'transparent' : el.backgroundColor,
+                      backgroundImage: el.type !== 'gaia-panel' && el.backgroundImage
                         ? `url('${el.backgroundImage}')`
                         : undefined,
                       border:
-                        el.borderWidth > 0
+                        el.type !== 'gaia-panel' && el.borderWidth > 0
                           ? `${el.borderWidth}px ${el.borderStyle} ${el.borderColor}`
                           : undefined,
-                      borderRadius: `${el.borderRadius}px`,
-                      boxShadow: el.boxShadow !== 'none' ? el.boxShadow : undefined,
+                      borderRadius: el.type === 'gaia-panel' ? undefined : `${el.borderRadius}px`,
+                      boxShadow: el.type !== 'gaia-panel' && el.boxShadow !== 'none' ? el.boxShadow : undefined,
                       backdropFilter: el.backdropFilter,
-                      padding: `${el.padding}px`,
+                      padding: el.type === 'gaia-panel' ? 0 : `${el.padding}px`,
                       clipPath: clipCss || undefined,
                       WebkitMaskImage: maskCss.webkitMask || undefined,
                       maskImage: maskCss.mask || undefined,
@@ -610,6 +651,18 @@ export const Canvas: React.FC<CanvasProps> = ({
                             {el.content}
                           </div>
                         )}
+
+                        {/* GAIA V2 COMPONENT — rendered as its real panel structure */}
+                        {el.type === 'gaia-panel' && el.gaia && (
+                          <iframe
+                            title={`${getGaiaComponent(el.gaia.kind).label} Gaia panel preview`}
+                            sandbox=""
+                            tabIndex={-1}
+                            aria-hidden="true"
+                            className="h-full w-full border-0 bg-transparent pointer-events-none"
+                            srcDoc={buildGaiaPanelPreviewDocument(el)}
+                          />
+                        )}
                       </>
                     )}
                   </div>
@@ -627,9 +680,11 @@ export const Canvas: React.FC<CanvasProps> = ({
                       {/* Bounding Box Border */}
                       <div className="absolute inset-0 pointer-events-none border border-indigo-400" />
 
-                      {/* Attribute Selector Label Badge */}
+                      {/* Selector Label Badge — Gaia components show their panel selector */}
                       <div className="absolute -top-5 left-0 rounded bg-indigo-600 px-1.5 py-0.5 text-[9px] font-mono text-white pointer-events-none whitespace-nowrap shadow">
-                        span[style*=&apos;color: {el.colorMarker}&apos;]
+                        {el.type === 'gaia-panel' && el.gaia
+                          ? `#${el.gaia.panelId || getGaiaComponent(el.gaia.kind).panelId || 'id_custom_####'}`
+                          : `span[style*='color: ${el.colorMarker}']`}
                       </div>
 
                       {/* Rotate Handle */}
