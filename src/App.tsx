@@ -11,7 +11,8 @@ import {
   DEFAULT_CUSTOM_COMPONENTS,
   CLIP_PRESETS,
 } from './utils/presets';
-import { createGaiaPanelElement, getGaiaComponent } from './utils/gaiaSpec';
+import { createGaiaPanelElement, getGaiaComponent, nextSlotInColumn } from './utils/gaiaSpec';
+import { GAIA_DEFAULT_PAGE_BACKGROUND } from './utils/gaiaDefaults';
 import { HeaderBar, AppViewMode, AppSection } from './components/HeaderBar';
 import { Canvas } from './components/Canvas';
 import { DockPanel, DockTab } from './components/DockPanel';
@@ -19,7 +20,7 @@ import { RightClickMenu } from './components/RightClickMenu';
 import { CustomComponentModal } from './components/CustomComponentModal';
 import { TranspilerModal } from './components/TranspilerModal';
 import { ForumPreview } from './components/ForumPreview';
-import { ImportModal } from './components/ImportModal';
+import { ImportProfileDialog } from './features/shared/import';
 import { ProfileTabs } from './components/ProfileTabs';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { ToolsStudio } from './components/ToolsStudio';
@@ -38,7 +39,9 @@ const LOCAL_STORAGE_CUSTOM_KEY = 'bbstudio_custom_components_v1';
 const BLANK_SETTINGS: CanvasSettings = {
   width: 1380,
   height: 600,
-  backgroundColor: '#0e111a',
+  // Gaia's own page surface — the canvas starts on the same colour the real
+  // profile uses, so nothing extra is styled until the user styles it.
+  backgroundColor: GAIA_DEFAULT_PAGE_BACKGROUND,
   backgroundRepeat: 'no-repeat',
   backgroundSize: 'cover',
   gridSnap: true,
@@ -304,13 +307,20 @@ export const App: React.FC = () => {
         const kind = customProps?.gaia?.kind || 'custom';
         const column = customProps?.gaia?.column || getGaiaComponent(kind).defaultColumn;
         const panel = createGaiaPanelElement(kind, column, elements.length, settings);
+        // V2 panels live in a column stack: every component takes the next free
+        // space at the bottom of its column instead of floating free.
+        const slot = nextSlotInColumn(elements, column, settings, panel);
         const merged: ProfileElement = {
           ...panel,
           ...customProps,
           id: newId,
+          x: slot.x,
+          y: slot.y,
+          zIndex: elements.length + 1,
           gaia: {
             ...panel.gaia!,
             ...(customProps?.gaia || {}),
+            column,
           },
         };
         updateActiveProfile((p) => ({
@@ -555,16 +565,34 @@ export const App: React.FC = () => {
    */
   const handleSendToolElement = useCallback(
     (element: ProfileElement) => {
+      const placeElement = (
+        incoming: ProfileElement,
+        existing: ProfileElement[],
+        settings: CanvasSettings
+      ): ProfileElement => {
+        if (!incoming.gaia) return incoming;
+        const column = incoming.gaia.column || 1;
+        const slot = nextSlotInColumn(existing, column, settings, incoming);
+        return {
+          ...incoming,
+          x: slot.x,
+          y: slot.y,
+          zIndex: existing.length + 1,
+          gaia: { ...incoming.gaia, column },
+        };
+      };
+
       if (profiles.length === 0) {
         // Tools-first flow: the result opens the first profile.
         const settings: CanvasSettings = { ...BLANK_SETTINGS, profileTitle: 'Toolkit Profile' };
+        const placed = placeElement(element, [], settings);
         const fresh = makeProfile({
           title: 'Toolkit Profile',
-          elements: [element],
+          elements: [placed],
           settings,
-          history: [{ elements: [element], settings }],
+          history: [{ elements: [placed], settings }],
           historyIdx: 0,
-          selectedId: element.id,
+          selectedId: placed.id,
         });
         setProfiles([fresh]);
         setActiveProfileId(fresh.id);
@@ -573,14 +601,15 @@ export const App: React.FC = () => {
         setProfiles((prev) =>
           prev.map((profile) => {
             if (profile.id !== targetId) return profile;
-            const nextElements = [...profile.elements, element];
+            const placed = placeElement(element, profile.elements, profile.settings);
+            const nextElements = [...profile.elements, placed];
             const trimmed = profile.history.slice(0, profile.historyIdx + 1);
             const nextHistory = [...trimmed, { elements: nextElements, settings: profile.settings }];
             const capped = nextHistory.length > 60 ? nextHistory.slice(-60) : nextHistory;
             return {
               ...profile,
               elements: nextElements,
-              selectedId: element.id,
+              selectedId: placed.id,
               history: capped,
               historyIdx: capped.length - 1,
             };
@@ -877,10 +906,7 @@ export const App: React.FC = () => {
       )}
 
       {appSection === 'tools' && (
-        <ToolsStudio
-          onSendToBuilder={handleSendToolElement}
-          onBackToBuilder={() => setAppSection('builder')}
-        />
+        <ToolsStudio onSendToBuilder={handleSendToolElement} />
       )}
 
       {appSection === 'builder' && !activeProfile && (
@@ -1215,7 +1241,7 @@ export const App: React.FC = () => {
       )}
 
       {showImportModal && (
-        <ImportModal
+        <ImportProfileDialog
           onClose={() => setShowImportModal(false)}
           onImport={handleImportProfile}
         />

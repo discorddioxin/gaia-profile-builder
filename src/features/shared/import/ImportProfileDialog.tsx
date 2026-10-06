@@ -16,18 +16,31 @@ import {
   Wand2,
   FileCode,
 } from 'lucide-react';
-import { ProfileElement, CanvasSettings } from '../types/profile';
+import { ProfileElement, CanvasSettings } from '../../../types/profile';
 import {
   importProfileFromUrl,
   importProfileFromHtml,
   ImportResult,
-} from '../utils/profileImporter';
-import { celebrate } from '../utils/celebrate';
-import { extractCanonicalUrl, formatBytes, readTextFile } from '../utils/importFile';
+} from './profileImporter';
+import { celebrate } from '../../../utils/celebrate';
+import { extractCanonicalUrl, formatBytes, readTextFile } from './importFile';
 
-interface ImportModalProps {
+/** Which surface opened the dialog — only changes the copy and the CTA. */
+export type ImportProfileVariant = 'builder' | 'tools';
+
+export interface ImportProfileDialogProps {
   onClose: () => void;
-  onImport: (
+  /**
+   * `builder` opens the import in a new editor tab (default).
+   * `tools` loads it straight into the Profile Tools live preview.
+   */
+  variant?: ImportProfileVariant;
+  /**
+   * Full result hook — consumers that only need to *render* the profile (the
+   * Profile Tools live preview) read everything from here.
+   */
+  onImportResult?: (result: ImportResult) => void;
+  onImport?: (
     elements: ProfileElement[],
     settings: Partial<CanvasSettings>,
     rawHtml: string,
@@ -74,7 +87,12 @@ const SAMPLE_HTML_SNIPPET = `<!doctype html>
 </body>
 </html>`;
 
-export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) => {
+export const ImportProfileDialog: React.FC<ImportProfileDialogProps> = ({
+  onClose,
+  onImport,
+  onImportResult,
+  variant = 'builder',
+}) => {
   const [tab, setTab] = useState<ImportSourceTab>('url');
 
   const [url, setUrl] = useState('');
@@ -89,6 +107,24 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
   const [loadedFile, setLoadedFile] = useState<{ name: string; size: number } | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  /** In-flight import — Cancelling (or closing) aborts its requests. */
+  const abortRef = React.useRef<AbortController | null>(null);
+
+  const cancelRun = React.useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    // Drop straight out of the loading state: a transport that ignores the
+    // abort signal must not be able to strand the dialog.
+    setStatus((prev) => (prev === 'loading' ? 'idle' : prev));
+    setProgressMsg('');
+  }, []);
+
+  const close = React.useCallback(() => {
+    cancelRun();
+    onClose();
+  }, [cancelRun, onClose]);
+
+  React.useEffect(() => cancelRun, [cancelRun]);
 
   const resetResult = () => {
     setResult(null);
@@ -104,21 +140,36 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
     let normalized = url.trim();
     if (!/^https?:\/\//i.test(normalized)) normalized = 'https://' + normalized;
 
+    cancelRun();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus('loading');
     setError('');
     setResult(null);
     setProgressMsg('Starting…');
 
     try {
-      const importResult = await importProfileFromUrl(normalized, (msg) => setProgressMsg(msg));
+      const importResult = await importProfileFromUrl(
+        normalized,
+        (msg) => setProgressMsg(msg),
+        { signal: controller.signal }
+      );
       setResult(importResult);
       setStatus('success');
       // Editable Canvas now renders the same DOM/CSS as Faithful HTML.
       setInitialRenderMode('canvas');
       celebrateImport();
     } catch (err) {
+      if (controller.signal.aborted) {
+        setStatus('idle');
+        setProgressMsg('');
+        return;
+      }
       setStatus('error');
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
@@ -159,6 +210,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
 
   const handleParseHtml = async () => {
     if (!htmlInput.trim()) return;
+    cancelRun();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus('loading');
     setError('');
     setResult(null);
@@ -166,16 +221,26 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
 
     try {
       const source = htmlSourceUrl.trim() || undefined;
-      const importResult = await importProfileFromHtml(htmlInput, source, (msg) =>
-        setProgressMsg(msg)
+      const importResult = await importProfileFromHtml(
+        htmlInput,
+        source,
+        (msg) => setProgressMsg(msg),
+        { signal: controller.signal }
       );
       setResult(importResult);
       setStatus('success');
       setInitialRenderMode('canvas');
       celebrate();
     } catch (err) {
+      if (controller.signal.aborted) {
+        setStatus('idle');
+        setProgressMsg('');
+        return;
+      }
       setStatus('error');
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
@@ -200,7 +265,8 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
 
   const handleApply = () => {
     if (!result) return;
-    onImport(
+    onImportResult?.(result);
+    onImport?.(
       result.elements,
       result.settings,
       result.rawHtml,
@@ -208,7 +274,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
       result.sourceUrl,
       initialRenderMode
     );
-    onClose();
+    close();
   };
 
   const switchTab = (next: ImportSourceTab) => {
@@ -233,17 +299,21 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                 <span className="hidden sm:flex items-center gap-1 rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-medium text-emerald-400 border border-emerald-500/30 shrink-0">
                   <ShieldCheck className="w-3 h-3" /> Scripts Stripped
                 </span>
-                <span className="hidden md:flex items-center gap-1 rounded bg-indigo-500/20 px-2 py-0.5 text-[10px] font-medium text-indigo-300 border border-indigo-500/30 shrink-0">
-                  Opens in New Tab
+                <span
+                  className={`hidden md:flex items-center gap-1 rounded bg-indigo-500/20 px-2 py-0.5 text-[10px] font-medium text-indigo-300 border border-indigo-500/30 shrink-0`}
+                >
+                  {variant === 'tools' ? 'Loads into Live Preview' : 'Opens in New Tab'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 truncate">
-                Imports become a new profile tab — your current work stays untouched
+                {variant === 'tools'
+                  ? 'The Live Preview renders this profile with its own CSS and columns'
+                  : 'Imports become a new profile tab — your current work stays untouched'}
               </p>
             </div>
           </div>
           <button
-            onClick={onClose}
+            onClick={close}
             className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-colors shrink-0"
           >
             <X className="h-4 w-4" />
@@ -329,10 +399,19 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
                 </div>
               )}
 
-              {status === 'loading' && progressMsg && (
+              {status === 'loading' && (
                 <div className="flex items-center gap-2 rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-2.5 text-[11px] text-indigo-200">
                   <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                  <span className="font-mono">{progressMsg}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono">
+                    {progressMsg || 'Working…'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={cancelRun}
+                    className="shrink-0 rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 transition-colors hover:border-slate-500 hover:text-white"
+                  >
+                    Cancel fetch
+                  </button>
                 </div>
               )}
 
@@ -808,7 +887,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
           </span>
           <div className="flex items-center gap-2">
             <button
-              onClick={onClose}
+              onClick={close}
               className="rounded-lg px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 transition-colors"
             >
               Cancel
@@ -819,7 +898,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({ onClose, onImport }) =
               className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-1.5 text-xs font-semibold text-white shadow disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition-all"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
-              Open in New Tab
+              {variant === 'tools' ? 'Load into Preview' : 'Open in New Tab'}
             </button>
           </div>
         </div>

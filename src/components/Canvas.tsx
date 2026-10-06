@@ -5,14 +5,14 @@ import {
   ElementType,
   CustomComponent,
 } from '../types/profile';
-import { getClipPathCss, getMaskCss } from '../utils/bbcodeTranspiler';
+import { buildGaiaPanelOverrideCss, getClipPathCss, getMaskCss } from '../utils/bbcodeTranspiler';
 import {
   columnForX,
   buildPanelHtml,
-  GAIA_PANEL_BASE_CSS,
   getGaiaComponent,
   isGaiaComponentKind,
 } from '../utils/gaiaSpec';
+import { GAIA_PANEL_FRAME_CSS, GAIA_V2_DEFAULT_CSS } from '../utils/gaiaDefaults';
 import { FloatingMicroBar } from './FloatingMicroBar';
 import { RotateCw, Lock, ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 
@@ -30,10 +30,13 @@ function buildGaiaPanelPreviewDocument(el: ProfileElement): string {
     title,
     bodyHtml: el.gaia.bodyHtml || def.bodyHtml,
     panelId,
-    extraStyle: `min-height:${el.height}px`,
   });
-  const panelStyle = `#${panelId} { width:100%; min-height:${el.height}px; margin:0; box-sizing:border-box; background-color:${el.backgroundColor}; ${el.backgroundImage ? `background-image:url('${el.backgroundImage}');background-size:cover;background-position:center;` : ''} color:${el.color}; border:${el.borderWidth}px ${el.borderStyle} ${el.borderColor}; border-radius:${el.borderRadius}px; padding:${el.padding}px; box-shadow:${el.boxShadow}; font-family:${el.fontFamily}; font-size:${el.fontSize}px; }`;
-  const css = `html,body{margin:0;min-height:100%;background:transparent}body{padding:0}.panel{width:100%;margin:0;box-sizing:border-box}${GAIA_PANEL_BASE_CSS}\n${def.defaultCss}\n${panelStyle}`;
+  // The preview iframe renders exactly what Gaia serves (its default V2
+  // stylesheet) plus the same overrides the exporter emits — nothing else.
+  const overrideCss = buildGaiaPanelOverrideCss(el, panelId);
+  const css = [GAIA_PANEL_FRAME_CSS, GAIA_V2_DEFAULT_CSS, overrideCss]
+    .filter(Boolean)
+    .join('\n\n');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body>${markup}</body></html>`;
 }
 
@@ -501,12 +504,16 @@ export const Canvas: React.FC<CanvasProps> = ({
             .filter((el) => !el.hidden)
             .map((el) => {
               const isSelected = selectedId === el.id;
-              const clipCss = getClipPathCss(el);
-              const maskCss = getMaskCss(el);
+              // Gaia panels are pre-rendered panels: clip / mask / animation
+              // arrive through the same override CSS the exporter emits, so the
+              // element box itself stays neutral (no doubled transforms).
+              const isGaiaPanel = el.type === 'gaia-panel' && !!el.gaia;
+              const clipCss = isGaiaPanel ? '' : getClipPathCss(el);
+              const maskCss = isGaiaPanel ? { webkitMask: '', mask: '' } : getMaskCss(el);
 
               // Pure CSS keyframe animation rule for canvas rendering
               let animCss = 'none';
-              if (el.animation && el.animation.enabled && el.animation.trigger !== 'hover') {
+              if (!isGaiaPanel && el.animation && el.animation.enabled && el.animation.trigger !== 'hover') {
                 const a = el.animation;
                 animCss = `${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction}`;
               }

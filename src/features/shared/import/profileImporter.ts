@@ -1,5 +1,5 @@
-import { ProfileElement, CanvasSettings } from '../types/profile';
-import { CLIP_PRESETS } from './presets';
+import { ProfileElement, CanvasSettings } from '../../../types/profile';
+import { CLIP_PRESETS } from '../../../utils/presets';
 import { extractCanonicalUrl } from './importFile';
 import {
   BackgroundSnapshot,
@@ -11,7 +11,7 @@ import {
   rewriteCssAssetUrls,
   rewriteImportTargets,
   snapshotDeclarations,
-} from './cssFidelity';
+} from '../../../utils/cssFidelity';
 import {
   GAIA_COMPONENT_ROOT_SELECTOR,
   createGaiaPanelElement,
@@ -19,7 +19,7 @@ import {
   getGaiaComponent,
   isGaiaComponentKind,
   xForColumn,
-} from './gaiaSpec';
+} from '../../../utils/gaiaSpec';
 
 /** Background resolved from the profile's CSS/inline styles (style, not <img>). */
 export interface DetectedBackground {
@@ -76,62 +76,217 @@ export interface ImportResult {
 const V2_UNSUPPORTED_MESSAGE =
   'Only V2 profiles supported. The imported HTML must include #columns with #column_1, #column_2, and #column_3.';
 
-const CORS_PROXIES = [
-  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  (url: string) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
-  (url: string) => `https://cors-anywhere.herokuapp.com/${url}`,
-  (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
+/**
+ * CORS relay endpoints, in the order they are tried. Each entry knows how to
+ * build its URL and how to unwrap its response (AllOrigins' `/get` route wraps
+ * the page in JSON).
+ */
+const CORS_PROXIES: Array<{
+  label: string;
+  build: (url: string) => string;
+  unwrap?: (body: string) => string;
+}> = [
+  {
+    label: 'AllOrigins',
+    build: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'corsproxy.io',
+    build: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'codetabs',
+    build: (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'AllOrigins (JSON)',
+    build: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    unwrap: (body) => {
+      try {
+        return String(JSON.parse(body)?.contents ?? '');
+      } catch {
+        return '';
+      }
+    },
+  },
 ];
+
+/** Responses that are really a proxy/gateway error page, not the profile. */
+const ERROR_BODY_MARKERS = [
+  /error:\s*network connection lost/i,
+  /upstream connect error/i,
+  /<title>\s*just a moment/i,
+  /cf-error-details/i,
+  /<title>\s*429 too many requests/i,
+  /request blocked by/i,
+];
+
+/** Cheap quality gate: is this plausibly a page body? */
+function isUsableHtml(body: string): boolean {
+  if (!body || body.length < 500) return false;
+  if (!/<html|<!doctype|<body|<div/i.test(body)) return false;
+  return !ERROR_BODY_MARKERS.some((marker) => marker.test(body));
+}
+
+/** A Gaia V2 profile always ships the `#columns` shell. */
+function looksLikeV2Profile(body: string): boolean {
+  return /id\s*=\s*["']?columns\b/i.test(body);
+}
+
+/** A stylesheet body: non-trivial text that is not a gateway error page. */
+function isUsableStylesheet(body: string): boolean {
+  if (!body || body.trim().length < 24) return false;
+  return !ERROR_BODY_MARKERS.some((marker) => marker.test(body));
+}
 
 /** Sleep helper for slow-loading pages */
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/**
- * Fetch a URL's raw HTML using a series of CORS proxy fallbacks.
- * Tries direct fetch first, then proxies in order until one succeeds.
- */
-async function fetchWithTimeout(url: string, timeoutMs = 25000): Promise<string> {
+export interface FetchHtmlOptions {
+  /** Cancels the fetch (dialog Cancel / close). */
+  signal?: AbortSignal;
+  /** Per-attempt budget. A hung proxy fails here instead of blocking forever. */
+  timeoutMs?: number;
+  /**
+   * What the caller expects back. Pages must look like HTML (and a V2 profile
+   * must carry `#columns`); stylesheets only need to be non-empty text.
+   */
+  accept?: 'html' | 'stylesheet';
+}
+
+/** Raised when the caller cancelled the import. */
+export class ImportAbortedError extends Error {
+  constructor() {
+    super('Import cancelled.');
+    this.name = 'ImportAbortedError';
+  }
+}
+
+/** One fetch attempt with its own timeout, linked to the caller's signal. */
+async function fetchOnce(
+  url: string,
+  timeoutMs: number,
+  outerSignal?: AbortSignal
+): Promise<string> {
   const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  outerSignal?.addEventListener('abort', onAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { mode: 'cors', signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.text();
+  } catch (error) {
+    if (outerSignal?.aborted) throw new ImportAbortedError();
+    if (controller.signal.aborted) throw new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`);
+    throw error;
   } finally {
     clearTimeout(timer);
+    outerSignal?.removeEventListener('abort', onAbort);
   }
 }
 
+/**
+ * Fetch a page's HTML through the first source that actually returns a profile.
+ *
+ * Direct → CORS relays, started with a small stagger and raced: the first
+ * response that contains the V2 `#columns` shell wins, so a slow or hanging
+ * relay can't hold the import hostage. A usable-but-unverified body is kept as
+ * a fallback in case no source returns the real page.
+ */
 export async function fetchProfileHtml(
   url: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<string> {
-  const attempts: Array<{ label: string; fn: () => Promise<string> }> = [
-    { label: 'direct', fn: () => fetchWithTimeout(url) },
-    ...CORS_PROXIES.map((proxy, i) => ({
-      label: `proxy ${i + 1}`,
-      fn: () => fetchWithTimeout(proxy(url)),
+  const { signal, timeoutMs = 10000, accept = 'html' } = options;
+  if (signal?.aborted) throw new ImportAbortedError();
+  const wantsStylesheet = accept === 'stylesheet';
+
+  const host = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url;
+    }
+  })();
+
+  const attempts: Array<{ label: string; run: (timeout: number) => Promise<string> }> = [
+    { label: 'direct connection', run: (timeout) => fetchOnce(url, timeout, signal) },
+    ...CORS_PROXIES.map((proxy) => ({
+      label: proxy.label,
+      run: async (timeout: number) => {
+        const body = await fetchOnce(proxy.build(url), timeout, signal);
+        return proxy.unwrap ? proxy.unwrap(body) : body;
+      },
     })),
   ];
 
-  const errors: string[] = [];
-  for (const attempt of attempts) {
-    onProgress?.(`Trying ${attempt.label}…`);
-    try {
-      const html = await attempt.fn();
-      if (html && html.length > 40) {
-        onProgress?.(`Loaded via ${attempt.label} (${(html.length / 1024).toFixed(1)}KB)`);
-        return html;
+  onProgress?.(`Fetching ${host} — direct, then CORS relays if the site blocks it…`);
+
+  return new Promise<string>((resolve, reject) => {
+    let pending = attempts.length;
+    let fallback = '';
+    let fallbackLabel = '';
+    const errors: string[] = [];
+
+    const finish = () => {
+      if (fallback) {
+        onProgress?.(`Loaded via ${fallbackLabel} (unverified) (${(fallback.length / 1024).toFixed(1)}KB)`);
+        resolve(fallback);
+        return;
       }
-      errors.push(`${attempt.label}: empty response`);
-    } catch (err) {
-      errors.push(`${attempt.label}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  throw new Error(
-    `All fetch attempts failed. Sites requiring login (Gaia Online, most forums) cannot be fetched directly — use "Import with HTML" and paste the page source. Details:\n${errors.join('\n')}`
-  );
+      reject(
+        new Error(
+          wantsStylesheet
+            ? `Could not fetch the stylesheet from ${host}. Attempts:\n${errors.join('\n')}`
+            : `Could not fetch ${host}. Sites that need a login (Gaia profiles included) block this — drop the saved page into "Import with HTML" instead. Attempts:\n${errors.join('\n')}`
+        )
+      );
+    };
+
+    attempts.forEach((attempt, index) => {
+      const start = () =>
+        attempt
+          .run(timeoutMs)
+          .then((body) => {
+            if (wantsStylesheet) {
+              if (isUsableStylesheet(body)) resolve(body);
+              else errors.push(`${attempt.label}: unusable stylesheet`);
+              return;
+            }
+            if (looksLikeV2Profile(body)) {
+              onProgress?.(`Loaded via ${attempt.label} (${(body.length / 1024).toFixed(1)}KB)`);
+              resolve(body);
+              return;
+            }
+            if (isUsableHtml(body)) {
+              if (!fallback) {
+                fallback = body;
+                fallbackLabel = attempt.label;
+              }
+              onProgress?.(`${attempt.label} returned a page without #columns — keeping it as a fallback`);
+            } else {
+              errors.push(`${attempt.label}: unusable response`);
+            }
+          })
+          .catch((error: unknown) => {
+            if (error instanceof ImportAbortedError) {
+              reject(error);
+              return;
+            }
+            errors.push(`${attempt.label}: ${error instanceof Error ? error.message : String(error)}`);
+            onProgress?.(`${attempt.label} failed — trying the next source…`);
+          })
+          .finally(() => {
+            pending -= 1;
+            if (pending === 0) finish();
+          });
+
+      // Stagger the relay requests slightly; the direct attempt goes first.
+      window.setTimeout(start, index * 200);
+    });
+  });
 }
 
 /** Strip all <script>...</script> blocks + inline event handlers + javascript: URLs */
@@ -417,14 +572,19 @@ function assertGaiaV2DefaultLayout(doc: Document): void {
 export async function extractCss(
   doc: Document,
   baseUrl: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<{ css: string; stylesheets: StylesheetRecord[] }> {
   const blocks: string[] = [];
   const stylesheets: StylesheetRecord[] = [];
 
   /** Fetch a sheet the same way pages are fetched: direct, then CORS proxies. */
   const fetchCss = async (url: string): Promise<string> => {
-    const text = await fetchProfileHtml(url, undefined);
+    const text = await fetchProfileHtml(url, undefined, {
+      ...options,
+      accept: 'stylesheet',
+      timeoutMs: options.timeoutMs ?? 8000,
+    });
     if (!text.trim()) throw new Error('empty stylesheet');
     return text;
   };
@@ -1268,10 +1428,11 @@ function parseClipPolygon(clip?: string): { x: number; y: number }[] | null {
 /** Top-level: fetch URL, sanitize, parse, scrape styles/background, reconstruct. */
 export async function importProfileFromUrl(
   url: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<ImportResult> {
   onProgress?.('Fetching page…');
-  const rawHtml = await fetchProfileHtml(url, onProgress);
+  const rawHtml = await fetchProfileHtml(url, onProgress, options);
 
   onProgress?.('Sanitizing (removing scripts)…');
   const { clean, scriptsRemoved } = sanitizeHtml(rawHtml);
@@ -1288,7 +1449,7 @@ export async function importProfileFromUrl(
   injectBbIds(doc);
 
   onProgress?.('Extracting stylesheets…');
-  const { css: importedCss, stylesheets } = await extractCss(doc, url, onProgress);
+  const { css: importedCss, stylesheets } = await extractCss(doc, url, onProgress, options);
 
   // The profile background is usually CSS (body/html rule) rather than an <img>.
   let background = detectProfileBackground(doc, importedCss, url);
@@ -1478,7 +1639,8 @@ export function injectBbIds(doc: Document): void {
 export async function importProfileFromHtml(
   rawInput: string,
   sourceUrl?: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<ImportResult> {
   const { clean, scriptsRemoved } = sanitizeHtml(rawInput);
 
@@ -1515,7 +1677,7 @@ export async function importProfileFromHtml(
 
   if (base) {
     onProgress?.('Resolving the profile CSS chain (links, @imports, libraries)…');
-    const linked = await extractCss(doc, base, onProgress);
+    const linked = await extractCss(doc, base, onProgress, options);
     importedCss = linked.css;
     stylesheets.push(...linked.stylesheets);
   } else {
@@ -1600,3 +1762,6 @@ export async function importProfileFromHtml(
     },
   };
 }
+
+/** Stylesheet record type re-exported for consumers of the import feature. */
+export type { StylesheetRecord } from '../../../utils/cssFidelity';
