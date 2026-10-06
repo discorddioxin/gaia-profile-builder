@@ -209,7 +209,7 @@ async function type(
 }
 
 /* ---------------------- file / canonical-url helpers ---------------------- */
-const { readTextFile, extractCanonicalUrl, formatBytes } = await import('@/utils/importFile');
+const { readTextFile, extractCanonicalUrl, formatBytes } = await import('@/features/shared/import/importFile');
 {
   const file = new window.File([PROFILE_HTML], 'lonely83.html', { type: 'text/html' });
   const text = await readTextFile(file);
@@ -262,11 +262,39 @@ if (railButton()) {
 await click(buttonByText(/^Tools$/, true), 'Tools section');
 check('Profile Tools section renders', /Profile Tools|Make anything/i.test(text()));
 
+/* The tool chooser is a flat tab bar under the top bar, not a boxed sidebar. */
+const toolTabs = () =>
+  Array.from(window.document.querySelectorAll('[role="tab"][aria-selected]')) as HTMLElement[];
+const tabs = toolTabs();
+check('Profile Tools chooser is a horizontal tab bar', tabs.length === 3, `${tabs.length} tabs`);
+check(
+  'tool tabs are flat (no button box, border radius or padding)',
+  tabs.length === 3 &&
+    tabs.every((tab) => !/rounded/.test(tab.className) && !/\bpx-/.test(tab.className) && !/\bbg-/.test(tab.className)),
+  tabs.map((tab) => tab.className).join(' | ')
+);
+check('no Back to Profile Builder button remains', !/back to profile builder/i.test(text()));
+check('the active tool tab is marked selected', tabs.filter((tab) => tab.getAttribute('aria-selected') === 'true').length === 1, tabs.map((tab) => `${tab.textContent?.trim()}:${tab.getAttribute('aria-selected')}`).join(' '));
+
 const addToBuilder = buttonByText(/Add to builder/i);
 check('tools expose Add to builder', !!addToBuilder);
+const toolsPreviewDoc = () =>
+  (window.document.querySelector('iframe[title="Profile tools preview"]') as HTMLIFrameElement | null)
+    ?.srcdoc || '';
 
 await click(buttonByText(/^Comments$/, true), 'content type chip');
 check('tools expose Gaia spec IDs', /#id_(details|comments|friends).*#(details|comments|friends)_title/.test(text()));
+const columnStrip = window.document.querySelector('[data-column-chooser]') as HTMLElement | null;
+check('the preview keeps a column chooser', !!columnStrip);
+const columnButtons = Array.from(
+  columnStrip?.querySelectorAll('button[aria-pressed]') || []
+) as HTMLElement[];
+check(
+  'the column chooser offers left / middle / right',
+  columnButtons.length === 3 &&
+    columnButtons.map((button) => (button.textContent || '').trim()).join(',') === 'Left,Middle,Right',
+  columnButtons.map((button) => (button.textContent || '').trim()).join(',')
+);
 const leftColumnButton = buttonByText(/^Left$/, true);
 if (leftColumnButton) await click(leftColumnButton, 'Left preview column');
 check('preview column toggle applies a column-width preset', !!leftColumnButton && leftColumnButton.getAttribute('aria-pressed') === 'true' && /320px/.test(leftColumnButton.getAttribute('title') || ''));
@@ -281,7 +309,72 @@ const cubeTurnChip = buttonByText(/Cube Turn/);
 if (cubeTurnChip) await click(cubeTurnChip, 'Cube Turn 3D preset');
 check('expanded 3D motion preset library includes Cube Turn', !!cubeTurnChip && cubeTurnChip.getAttribute('aria-pressed') === 'true');
 check('advanced animation and 3D properties are available', /Advanced motion properties/.test(text()));
-check('selected motion layers combine in the live CSS', /glitchShake,\s*tilt3d,\s*cubeTurn/.test(text()));
+
+/* ------------------------- tools shell: css + zoom ------------------------ */
+check('no Copy HTML button in the tools', !/Copy HTML/i.test(text()));
+const cssPane = window.document.querySelector('section[aria-label="Generated CSS"]') as HTMLElement | null;
+check('the CSS read-out is its own pane', !!cssPane);
+check(
+  'the CSS pane offers a CSS/Tree toggle and a Copy CSS action',
+  !!cssPane &&
+    !!Array.from(cssPane.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === 'Tree') &&
+    !!Array.from(cssPane.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === 'CSS') &&
+    !!Array.from(cssPane.querySelectorAll('button')).find((b) => /Copy CSS/i.test(b.textContent || ''))
+);
+check(
+  'the CSS pane is given 30% of the column height',
+  !!cssPane && /basis-\[30%\]/.test(cssPane.className),
+  cssPane?.className || 'missing'
+);
+
+const treeToggle = cssPane
+  ? (Array.from(cssPane.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === 'Tree') as HTMLButtonElement | undefined)
+  : undefined;
+if (treeToggle) {
+  await click(treeToggle, 'Tree view');
+}
+const treeNode = cssPane ? (cssPane.querySelector('button[aria-label="Collapse"], button[aria-label="Expand"]') as HTMLElement | null) : null;
+check('switching to Tree view renders navigable CSS nodes', !!treeNode, text().slice(0, 0));
+const backToCss = cssPane
+  ? (Array.from(cssPane.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === 'CSS') as HTMLButtonElement | undefined)
+  : undefined;
+if (backToCss) await click(backToCss, 'CSS view');
+
+const previewSurface = window.document.querySelector('[data-profile-preview]') as HTMLElement | null;
+const inPreview = (selector: string) =>
+  (previewSurface?.querySelector(selector) as HTMLElement | null) || null;
+check('the live preview is a full-profile surface', !!previewSurface);
+const zoomOut = inPreview('button[title="Zoom out"]') as HTMLButtonElement | null;
+const zoomIn = inPreview('button[title="Zoom in"]') as HTMLButtonElement | null;
+const zoomFit = inPreview('button[title="Fit the profile width to this pane"]') as HTMLButtonElement | null;
+check('the live preview exposes zoom in / out / fit controls', !!zoomOut && !!zoomIn && !!zoomFit);
+const zoomReadout = () => {
+  const button = Array.from(previewSurface?.querySelectorAll('button') || []).find((candidate) =>
+    /^\d+%$/.test((candidate.textContent || '').trim())
+  );
+  return (button?.textContent || '').trim();
+};
+const previewIframe = window.document.querySelector('iframe[title="Profile tools preview"]') as HTMLIFrameElement | null;
+const beforeZoom = zoomReadout();
+const beforeScale = previewIframe?.style.transform || '';
+if (zoomIn) await click(zoomIn, 'zoom in');
+await settle(60);
+const afterZoom = zoomReadout();
+const afterScale = previewIframe?.style.transform || '';
+check(
+  'zoom controls change the preview scale',
+  !!beforeZoom && !!afterZoom && beforeZoom !== afterZoom && beforeScale !== afterScale,
+  `${beforeZoom} -> ${afterZoom} · ${beforeScale} -> ${afterScale}`
+);
+
+check(
+  'selected motion layers combine in the generated override CSS',
+  /animation:\s*glitchShake\b[^;]*\btilt3d\b[^;]*\bcubeTurn\b/.test(text())
+);
+check(
+  'the tools preview renders Gaia default V2 styling',
+  /v2\/common\.css/.test(toolsPreviewDoc()) && /#3D8AD0/.test(toolsPreviewDoc())
+);
 const beforeTools = canvasCount();
 await click(addToBuilder, 'Add to builder');
 await settle(200);
@@ -289,7 +382,36 @@ const afterTools = canvasCount();
 check('Add to builder creates elements in the canvas', afterTools > beforeTools, `${beforeTools} → ${afterTools}`);
 const realGaiaPanelPreview = window.document.querySelector('iframe[title="Comments Gaia panel preview"]') as HTMLIFrameElement | null;
 check('Builder renders the real Gaia panel markup and IDs', !!realGaiaPanelPreview && /class="panel comments_panel" id="id_comments"/.test(realGaiaPanelPreview.srcdoc) && /id="comments_title"/.test(realGaiaPanelPreview.srcdoc));
+check(
+  'Builder canvas preview uses Gaia defaults without the builder theme',
+  !!realGaiaPanelPreview &&
+    /v2\/panels\.css/.test(realGaiaPanelPreview.srcdoc) &&
+    /#3D8AD0/.test(realGaiaPanelPreview.srcdoc) &&
+    !/rgba\(15, 23, 42/.test(realGaiaPanelPreview.srcdoc)
+);
 check('dock is open for the selected tool element', isDockOpen());
+
+// Same column again: the component must take the next space at the bottom of
+// the column instead of landing on top of the first one.
+const gaiaPanels = () =>
+  Array.from(window.document.querySelectorAll('[id^="gaia_"]')) as HTMLElement[];
+const firstPanel = gaiaPanels()[0];
+await click(buttonByText(/^Tools$/, true), 'Tools section (stacked add)');
+await click(buttonByText(/Add to builder/i), 'Add to builder (stacked)');
+await settle(250);
+const panels = gaiaPanels();
+check(
+  'a second component stacks below the first in the toggled column',
+  panels.length === 2 &&
+    !!firstPanel &&
+    panels[1].style.left === firstPanel.style.left &&
+    parseFloat(panels[1].style.top) > parseFloat(firstPanel.style.top),
+  `${panels.length} panels · ${panels.map((p) => `${p.style.left}/${p.style.top}`).join(' → ')}`
+);
+check(
+  'the stacked panel exports into the same V2 column',
+  panels.length === 2 && !!panels[1].style.left && panels[1].style.left === firstPanel?.style.left
+);
 
 // Collapse, then select an existing element by hand: selection must re-open it.
 await click(window.document.querySelector('[title="Collapse Panel"]'), 'Collapse Panel');
@@ -401,11 +523,106 @@ check(
   `selected=${selectedAfterImport} dockOpen=${dockOpenAfterImport}`
 );
 
+/* ------------------------- tools: shared import --------------------------- */
+await click(buttonByText(/^Tools$/, true), 'Tools section (import check)');
+await settle(150);
+const importButton = buttonByText(/Import profile/i);
+check('tools can import a profile', !!importButton);
+if (importButton) await click(importButton, 'tools import');
+await settle(60);
+check('the tools import dialog opens', /Import from URL|Import with HTML/.test(text()));
+await click(buttonByText(/Import with HTML/i), 'tools import with HTML');
+
+const toolsFileInput = window.document.querySelector('input[type="file"]') as HTMLInputElement | null;
+const toolsDropZone = window.document.querySelector('textarea')?.parentElement;
+if (toolsFileInput && toolsDropZone) {
+  await act(async () => {
+    const file = new window.File([PROFILE_HTML], 'lonely83-profile.html', { type: 'text/html' });
+    const drop = new window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [file] } });
+    toolsDropZone.dispatchEvent(drop);
+  });
+  await settle(200);
+}
+await click(buttonByText(/^Parse HTML$/i), 'parse tools import');
+await settle(1500);
+await click(buttonByText(/Load into Preview/i), 'load into tools preview');
+await settle(400);
+const importedPreview = window.document.querySelector('iframe[title="Profile tools preview"]') as HTMLIFrameElement | null;
+check(
+  'the tools preview renders the imported profile and its CSS chain',
+  !!importedPreview &&
+    /id="columns"/.test(importedPreview.srcdoc) &&
+    /example\.invalid/.test(importedPreview.srcdoc),
+  `${(importedPreview?.srcdoc || '').length} chars`
+);
+check('the imported profile can be cleared from the tools', !!buttonByText(/^Clear$/, true));
+const clearImport = buttonByText(/^Clear$/, true);
+if (clearImport) await click(clearImport, 'clear imported profile');
+await settle(120);
+check('clearing returns the preview to the sample profile', !/example\.invalid/.test(toolsPreviewDoc()));
+
+const reopenImport = buttonByText(/Import profile/i);
+if (reopenImport) await click(reopenImport, 'reopen tools import');
+await settle(60);
+
+// The URL tab must offer a way out of a hanging fetch: stub fetch with a
+// promise that never settles, start a fetch, then cancel it.
+const realFetch = globalThis.fetch;
+let fetchCalls = 0;
+let fetchAborts = 0;
+// The app modules resolve `fetch` from the Node realm, so stub the global.
+// The stub honours abort the way a real transport does.
+(globalThis as unknown as { fetch: unknown }).fetch = (
+  _url: string,
+  init?: { signal?: AbortSignal }
+) => {
+  fetchCalls += 1;
+  return new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => {
+      fetchAborts += 1;
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    });
+  });
+};
+await click(buttonByText(/Import from URL/i), 'tools import from URL');
+const urlField = window.document.querySelector('input[placeholder*="example.com"]') as HTMLInputElement | null;
+if (urlField) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  await act(async () => {
+    setter?.call(urlField, 'https://example.invalid/profile');
+    urlField.dispatchEvent(new window.Event('input', { bubbles: true }));
+  });
+}
+const urlForm = urlField?.closest('form');
+await act(async () => {
+  urlForm?.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+});
+await settle(80);
+const cancelFetch = buttonByText(/Cancel fetch/i);
+check('a hanging fetch exposes a cancel control', fetchCalls > 0 && !!cancelFetch, `${fetchCalls} fetch calls`);
+if (cancelFetch) await click(cancelFetch, 'cancel hanging fetch');
+await settle(60);
+check(
+  'cancelling a fetch aborts the request and returns the dialog to idle',
+  fetchAborts > 0 && !buttonByText(/Cancel fetch/i),
+  `${fetchAborts} aborted of ${fetchCalls}`
+);
+(globalThis as unknown as { fetch: typeof fetch }).fetch = realFetch;
+await click(buttonByText(/^Cancel$/, true), 'close import dialog');
+await settle(60);
+await click(buttonByText(/^Builder$/, true), 'back to Builder after tools import');
+await settle(120);
+
 for (let i = 0; i < 5; i += 1) {
   const closeBtn = window.document.querySelector('[title="Close tab"]');
   if (!closeBtn) break;
   await click(closeBtn, 'close tab');
 }
+
 check('closing every tab returns to the welcome screen', /Start a profile from scratch/.test(text()));
 
 check('no React/JS errors during the run', errors.length === 0, errors.slice(0, 3).join(' | '));

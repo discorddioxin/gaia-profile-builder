@@ -1,12 +1,16 @@
 import React, { useMemo, useState } from 'react';
-import { Copy, Check, Image as ImageIcon, Palette, Layers } from 'lucide-react';
+import { Image as ImageIcon, Palette } from 'lucide-react';
 import {
   BackgroundConfig,
   DEFAULT_BACKGROUND,
   backgroundCss,
 } from '../../utils/toolPresets';
-import { buildV2Document, GAIA_COLUMNS_BASE_CSS, GAIA_PANEL_BASE_CSS } from '../../utils/gaiaSpec';
-import { ToolsPreview } from './ToolsPreview';
+import { buildV2Document } from '../../utils/gaiaSpec';
+import { GAIA_V2_DEFAULT_CSS } from '../../utils/gaiaDefaults';
+import type { ImportedProfileSnapshot } from '../../features/shared/import';
+import { ProfilePreview } from './ProfilePreview';
+import { CssPane } from './CssPane';
+import { buildToolsPreviewDocument } from './toolsPreviewDoc';
 
 const PRESETS: Array<{ label: string; config: Partial<BackgroundConfig> }> = [
   { label: 'Midnight', config: { color: '#0b0f1a', gradient: 'none', vignette: false } },
@@ -40,13 +44,18 @@ const PRESETS: Array<{ label: string; config: Partial<BackgroundConfig> }> = [
  * Background Studio — builds the `body#viewer { … }` surface rule that Gaia V2
  * profiles keep, including backgrounds that only exist as CSS (never an <img>).
  */
-export const BackgroundStudio: React.FC = () => {
+interface BackgroundStudioProps {
+  /** The user's imported profile, when the Tools are previewing one. */
+  imported?: ImportedProfileSnapshot | null;
+}
+
+export const BackgroundStudio: React.FC<BackgroundStudioProps> = ({ imported }) => {
   const [config, setConfig] = useState<BackgroundConfig>(DEFAULT_BACKGROUND);
-  const [copied, setCopied] = useState(false);
 
   const css = useMemo(() => backgroundCss(config), [config]);
 
-  const previewDoc = useMemo(() => {
+  /** Sample profile used when nothing has been imported. */
+  const sampleDoc = useMemo(() => {
     const columnsHtml = `<div id="columns">
   <div id="column_1" class="column focus_column">
     <div class="panel details_panel" id="id_details">
@@ -65,44 +74,46 @@ export const BackgroundStudio: React.FC = () => {
   <div id="column_3" class="column focus_column"></div>
 </div>`;
 
-    const baseCss = [
-      `body#viewer { margin: 0; color: #e2e8f0; font-family: 'Segoe UI', sans-serif; }`,
-      GAIA_COLUMNS_BASE_CSS,
-      GAIA_PANEL_BASE_CSS,
-      css,
-    ].join('\n\n');
+    // Gaia's default V2 styling, then the surface rule as an override.
+    const baseCss = [GAIA_V2_DEFAULT_CSS, css].join('\n\n');
 
     return buildV2Document(columnsHtml, baseCss, 'Background Studio preview');
   }, [css]);
 
+  /** The surface rule layered onto the user's own stylesheet chain. */
+  const previewDoc = useMemo(
+    () =>
+      buildToolsPreviewDocument({
+        imported,
+        fallback: sampleDoc,
+        extraCss: imported ? css : undefined,
+      }),
+    [imported, sampleDoc, css]
+  );
+
   const update = (patch: Partial<BackgroundConfig>) => setConfig((prev) => ({ ...prev, ...patch }));
 
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(css);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    } catch {
-      /* clipboard unavailable */
-    }
-  };
+  const field =
+    'w-full border border-slate-800 bg-slate-950 px-1.5 py-1 text-[10px] text-slate-100 focus:border-emerald-500 focus:outline-none';
+  const fieldLabel = 'shrink-0 text-[9px] uppercase tracking-wider text-slate-500';
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col lg:flex-row">
-      <div className="flex-1 min-w-0 overflow-y-auto p-4 space-y-4">
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
-          <div className="flex items-center gap-1.5">
-            <Palette className="h-3.5 w-3.5 text-emerald-400" />
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+    <div className="flex flex-1 min-h-0 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+      <div className="w-full min-w-0 border-slate-800 p-2 lg:w-1/2 lg:overflow-y-auto lg:border-r">
+        <section className="border-b border-slate-800 pb-2">
+          <header className="mb-1.5 flex items-center gap-1.5">
+            <Palette className="h-3 w-3 text-emerald-400" />
+            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">
               Quick palettes
             </h3>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
+          </header>
+          <div className="flex flex-wrap gap-1">
             {PRESETS.map((preset) => (
               <button
                 key={preset.label}
+                type="button"
                 onClick={() => setConfig((prev) => ({ ...prev, ...preset.config }))}
-                className="rounded-lg border border-slate-800 bg-slate-950 px-2.5 py-1 text-[11px] text-slate-300 hover:border-emerald-500/50 hover:text-white"
+                className="border border-slate-800 px-1.5 py-[3px] text-[10px] leading-none text-slate-300 transition-colors hover:border-emerald-500/50 hover:text-white"
               >
                 {preset.label}
               </button>
@@ -110,45 +121,47 @@ export const BackgroundStudio: React.FC = () => {
           </div>
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+        <section className="border-b border-slate-800 py-2">
+          <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-300">
             Base surface
           </h3>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-slate-500">Background colour</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={config.color}
-                  onChange={(e) => update({ color: e.target.value })}
-                  className="h-8 w-12 cursor-pointer rounded border border-slate-700 bg-slate-950 p-0.5"
-                />
-                <input
-                  value={config.color}
-                  onChange={(e) => update({ color: e.target.value })}
-                  className="w-24 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-[11px] text-slate-200"
-                />
-              </div>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            <label className="col-span-2 flex items-center gap-1.5">
+              <span className={fieldLabel}>Colour</span>
+              <input
+                type="color"
+                value={config.color}
+                onChange={(event) => update({ color: event.target.value })}
+                className="h-6 w-8 cursor-pointer border border-slate-800 bg-slate-950 p-0"
+              />
+              <input
+                value={config.color}
+                onChange={(event) => update({ color: event.target.value })}
+                className={`${field} font-mono`}
+              />
             </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-slate-500">Gradient</span>
+            <label className="flex items-center gap-1.5">
+              <span className={fieldLabel}>Gradient</span>
               <select
                 value={config.gradient}
-                onChange={(e) => update({ gradient: e.target.value as BackgroundConfig['gradient'] })}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100"
+                onChange={(event) =>
+                  update({ gradient: event.target.value as BackgroundConfig['gradient'] })
+                }
+                className={field}
               >
                 <option value="none">None</option>
                 <option value="linear">Linear</option>
                 <option value="radial">Radial</option>
               </select>
             </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-slate-500">Attachment</span>
+            <label className="flex items-center gap-1.5">
+              <span className={fieldLabel}>Attach</span>
               <select
                 value={config.attachment}
-                onChange={(e) => update({ attachment: e.target.value as BackgroundConfig['attachment'] })}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100"
+                onChange={(event) =>
+                  update({ attachment: event.target.value as BackgroundConfig['attachment'] })
+                }
+                className={field}
               >
                 <option value="scroll">Scroll</option>
                 <option value="fixed">Fixed</option>
@@ -157,28 +170,28 @@ export const BackgroundStudio: React.FC = () => {
           </div>
 
           {config.gradient !== 'none' && (
-            <div className="grid gap-3 sm:grid-cols-4">
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500">From</span>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+              <label className="flex items-center gap-1.5">
+                <span className={fieldLabel}>From</span>
                 <input
                   type="color"
                   value={config.gradientFrom}
-                  onChange={(e) => update({ gradientFrom: e.target.value })}
-                  className="h-8 w-full cursor-pointer rounded border border-slate-700 bg-slate-950 p-0.5"
+                  onChange={(event) => update({ gradientFrom: event.target.value })}
+                  className="h-6 w-8 cursor-pointer border border-slate-800 bg-slate-950 p-0"
                 />
               </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500">To</span>
+              <label className="flex items-center gap-1.5">
+                <span className={fieldLabel}>To</span>
                 <input
                   type="color"
                   value={config.gradientTo}
-                  onChange={(e) => update({ gradientTo: e.target.value })}
-                  className="h-8 w-full cursor-pointer rounded border border-slate-700 bg-slate-950 p-0.5"
+                  onChange={(event) => update({ gradientTo: event.target.value })}
+                  className="h-6 w-8 cursor-pointer border border-slate-800 bg-slate-950 p-0"
                 />
               </label>
-              <label className="flex flex-col gap-1">
-                <span className="text-[10px] text-slate-500">
-                  Angle · {config.gradient === 'radial' ? 'n/a' : `${config.gradientAngle}°`}
+              <label className="col-span-2 flex items-center gap-1.5">
+                <span className={fieldLabel}>
+                  Angle {config.gradient === 'radial' ? 'n/a' : `${config.gradientAngle}deg`}
                 </span>
                 <input
                   type="range"
@@ -186,43 +199,45 @@ export const BackgroundStudio: React.FC = () => {
                   max={360}
                   value={config.gradientAngle}
                   disabled={config.gradient === 'radial'}
-                  onChange={(e) => update({ gradientAngle: Number(e.target.value) })}
-                  className="accent-emerald-500 disabled:opacity-40"
+                  onChange={(event) => update({ gradientAngle: Number(event.target.value) })}
+                  className="w-full accent-emerald-500 disabled:opacity-40"
                 />
-              </label>
-              <label className="flex items-center gap-2 pt-4 text-[11px] text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={config.vignette}
-                  onChange={(e) => update({ vignette: e.target.checked })}
-                  className="accent-emerald-500"
-                />
-                Vignette
+                <label className="flex shrink-0 items-center gap-1 text-[10px] text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={config.vignette}
+                    onChange={(event) => update({ vignette: event.target.checked })}
+                    className="accent-emerald-500"
+                  />
+                  Vignette
+                </label>
               </label>
             </div>
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4 space-y-3">
-          <div className="flex items-center gap-1.5">
-            <ImageIcon className="h-3.5 w-3.5 text-cyan-400" />
-            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-300">
+        <section className="py-2">
+          <header className="mb-1.5 flex items-center gap-1.5">
+            <ImageIcon className="h-3 w-3 text-cyan-400" />
+            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">
               Background image
             </h3>
-          </div>
+          </header>
           <input
             value={config.image}
-            onChange={(e) => update({ image: e.target.value })}
-            placeholder="https://www.gaiaonline.com/…/background.png"
-            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100 focus:border-cyan-500 focus:outline-none"
+            onChange={(event) => update({ image: event.target.value })}
+            placeholder="https://www.gaiaonline.com/.../background.png"
+            className={`${field} font-mono`}
           />
-          <div className="grid gap-3 sm:grid-cols-3">
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-slate-500">Repeat</span>
+          <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            <label className="flex items-center gap-1.5">
+              <span className={fieldLabel}>Repeat</span>
               <select
                 value={config.repeat}
-                onChange={(e) => update({ repeat: e.target.value as BackgroundConfig['repeat'] })}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100"
+                onChange={(event) =>
+                  update({ repeat: event.target.value as BackgroundConfig['repeat'] })
+                }
+                className={field}
               >
                 <option value="no-repeat">no-repeat</option>
                 <option value="repeat">repeat</option>
@@ -230,60 +245,59 @@ export const BackgroundStudio: React.FC = () => {
                 <option value="repeat-y">repeat-y</option>
               </select>
             </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] text-slate-500">Size</span>
+            <label className="flex items-center gap-1.5">
+              <span className={fieldLabel}>Size</span>
               <select
                 value={config.size}
-                onChange={(e) => update({ size: e.target.value as BackgroundConfig['size'] })}
-                className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-[11px] text-slate-100"
+                onChange={(event) => update({ size: event.target.value as BackgroundConfig['size'] })}
+                className={field}
               >
                 <option value="cover">cover</option>
                 <option value="contain">contain</option>
                 <option value="auto">auto</option>
               </select>
             </label>
-            <div className="flex items-end">
-              <button
-                onClick={() =>
-                  update({
-                    image: '',
-                    gradient: 'radial',
-                    gradientFrom: '#1e1b4b',
-                    gradientTo: '#0b0f1a',
-                    vignette: true,
-                  })
-                }
-                className="w-full rounded-lg border border-slate-800 px-2 py-1.5 text-[11px] text-slate-400 hover:text-slate-200"
-              >
-                Clear image
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() =>
+                update({
+                  image: '',
+                  gradient: 'radial',
+                  gradientFrom: '#1e1b4b',
+                  gradientTo: '#0b0f1a',
+                  vignette: true,
+                })
+              }
+              className="border border-slate-800 px-2 py-1 text-[10px] text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
+            >
+              Clear image
+            </button>
           </div>
-          <p className="text-[10px] leading-relaxed text-slate-500">
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
             Gaia profiles often define their background as a CSS rule rather than an image element —
             this studio writes that rule directly, so imported backgrounds keep rendering.
           </p>
         </section>
       </div>
 
-      <div className="flex w-full shrink-0 flex-col gap-3 border-t border-slate-800 bg-slate-950/60 p-4 lg:w-[460px] lg:border-l lg:border-t-0">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-200">
-            <Layers className="h-3.5 w-3.5 text-emerald-400" />
-            Surface preview
-          </div>
-          <button
-            onClick={copy}
-            className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-900 px-2 py-1 text-[10px] text-slate-200 hover:border-slate-700"
-          >
-            {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-            Copy CSS
-          </button>
-        </div>
-        <ToolsPreview document={previewDoc} height={280} />
-        <pre className="overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-3 font-mono text-[10px] leading-relaxed text-emerald-200">
-          {css}
-        </pre>
+      {/* ---------------------- preview (70%) + CSS (30%) ------------------- */}
+      <div className="flex w-full min-h-[520px] shrink-0 flex-col gap-2 border-t border-slate-800 bg-slate-950/60 p-2 lg:w-1/2 lg:min-h-0 lg:border-t-0">
+        <ProfilePreview
+          document={previewDoc}
+          toolbar={
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                Surface preview
+              </span>
+              {imported && (
+                <span className="border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[9px] text-cyan-200">
+                  {imported.title}
+                </span>
+              )}
+            </div>
+          }
+        />
+        <CssPane css={css} title="Surface CSS" className="flex-none basis-[30%]" />
       </div>
     </div>
   );

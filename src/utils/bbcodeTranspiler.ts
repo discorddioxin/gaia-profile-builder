@@ -5,14 +5,18 @@ import {
   GaiaComponentUsage,
 } from '../types/profile';
 import {
-  GAIA_COLUMNS_BASE_CSS,
-  GAIA_PANEL_BASE_CSS,
   buildPanelHtml,
   buildV2Document,
   getGaiaComponent,
   indent,
+  isGaiaComponentKind,
   isGaiaPanelElement,
 } from './gaiaSpec';
+import {
+  GAIA_NEUTRAL_FONT_SIZE,
+  GAIA_DEFAULT_PAGE_BACKGROUND,
+  GAIA_V2_DEFAULT_CSS,
+} from './gaiaDefaults';
 
 /**
  * Exact Mappings according to specification:
@@ -297,75 +301,102 @@ function styleLines(pairs: Array<[string, string | number | undefined | null]>):
     .map(([prop, value]) => `  ${prop}: ${value};`);
 }
 
-/** Build the CSS block for a single component instance, keyed on Gaia selectors. */
+/**
+ * Overrides for a single Gaia panel instance, keyed on its Gaia selector.
+ *
+ * These are *overrides only*: anything still at its Gaia-neutral value is left
+ * out so the pasted CSS layers on top of Gaia's default V2 stylesheet instead
+ * of restating (or fighting) it.
+ */
 function buildPanelCss(slot: GaiaPanelSlot): string {
   const el = slot.element;
   const def = slot.def;
   const selector = `#${slot.panelId}`;
   const lines: string[] = [];
 
-  lines.push(`/* ${def.label} — Gaia V2 component root ${selector} (${def.panelClass.split(' ')[0]}) */`);
-  lines.push(`${selector} {`);
-  lines.push(...styleLines([
+  const bodyLines = styleLines([
     // Width is owned by the V2 column, not the panel — the spec requires
     // #columns/#column_N to control reflow.
-    ['min-height', el.height ? `${el.height}px` : undefined],
-    ['background-color', el.backgroundColor],
+    ['background-color', el.backgroundColor !== 'transparent' ? el.backgroundColor : undefined],
     ['background-image', el.backgroundImage ? `url('${el.backgroundImage}')` : undefined],
     ['background-size', el.backgroundImage ? 'cover' : undefined],
     ['background-position', el.backgroundImage ? 'center' : undefined],
-    ['border', el.borderWidth > 0 ? `${el.borderWidth}px ${el.borderStyle} ${el.borderColor}` : undefined],
+    ['border', el.borderWidth > 0 && el.borderStyle !== 'none' ? `${el.borderWidth}px ${el.borderStyle} ${el.borderColor}` : undefined],
     ['border-radius', el.borderRadius > 0 ? `${el.borderRadius}px` : undefined],
     ['padding', el.padding > 0 ? `${el.padding}px` : undefined],
     ['box-shadow', el.boxShadow],
     ['backdrop-filter', el.backdropFilter],
-    ['overflow', el.overflow],
-    ['color', el.color],
+    ['overflow', el.overflow !== 'visible' ? el.overflow : undefined],
+    ['color', el.color !== 'inherit' ? el.color : undefined],
     ['text-align', el.textAlign !== 'left' ? el.textAlign : undefined],
-    ['font-size', el.fontSize ? `${el.fontSize}px` : undefined],
+    ['font-size', el.fontSize !== GAIA_NEUTRAL_FONT_SIZE ? `${el.fontSize}px` : undefined],
     ['font-family', el.fontFamily && el.fontFamily !== 'inherit' ? el.fontFamily : undefined],
     ['font-weight', el.fontWeight !== 'normal' ? el.fontWeight : undefined],
     ['font-style', el.fontStyle !== 'normal' ? el.fontStyle : undefined],
     ['transform', el.rotate ? `rotate(${el.rotate}deg)` : undefined],
     ['opacity', el.opacity < 100 ? (el.opacity / 100).toFixed(2) : undefined],
     ['z-index', el.zIndex > 1 ? el.zIndex : undefined],
-  ]));
+  ]);
   const clipCss = getClipPathCss(el);
-  if (clipCss) lines.push(`  clip-path: ${clipCss};`);
   const maskCss = getMaskCss(el);
+  const hasAnimation = !!el.animation?.enabled && el.animation.trigger === 'always';
+  const hasHoverAnimation = !!el.animation?.enabled && el.animation.trigger === 'hover';
+
+  const headingLines = styleLines([
+    ['color', el.color !== 'inherit' ? el.color : undefined],
+    ['font-size', el.fontSize !== GAIA_NEUTRAL_FONT_SIZE ? `${Math.max(12, Math.round(el.fontSize + 2))}px` : undefined],
+    ['font-weight', el.fontWeight !== 'normal' ? el.fontWeight : undefined],
+    ['text-align', el.textAlign !== 'left' ? el.textAlign : undefined],
+  ]);
+
+  const styled =
+    bodyLines.length > 0 ||
+    headingLines.length > 0 ||
+    !!clipCss ||
+    !!maskCss.webkitMask ||
+    hasAnimation ||
+    hasHoverAnimation ||
+    !!el.customCss;
+  if (!styled) return '';
+
+  lines.push(`/* ${def.label} — override for the Gaia V2 component root ${selector} (${def.panelClass.split(' ')[0]}) */`);
+  lines.push(`${selector} {`);
+  lines.push(...bodyLines);
+  if (clipCss) lines.push(`  clip-path: ${clipCss};`);
   if (maskCss.webkitMask) {
     lines.push(`  -webkit-mask-image: ${maskCss.webkitMask};`);
     lines.push(`  mask-image: ${maskCss.mask};`);
   }
-  if (el.animation?.enabled && el.animation.trigger === 'always') {
-    const a = el.animation;
+  if (hasAnimation) {
+    const a = el.animation!;
     lines.push(`  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`);
   }
   if (el.customCss) lines.push(`  ${el.customCss}`);
   lines.push('}');
 
-  if (el.animation?.enabled && el.animation.trigger === 'hover') {
-    const a = el.animation;
+  if (hasHoverAnimation) {
+    const a = el.animation!;
     lines.push(`${selector}:hover {`);
     lines.push(`  animation: ${a.preset} ${a.duration}s ${a.timing} ${a.delay}s ${a.iteration} ${a.direction};`);
     lines.push('}');
   }
 
-  // Title + inner typography, still authored against the Gaia panel classes.
-  lines.push(`${selector} > h2 {`);
-  lines.push(...styleLines([
-    ['color', el.color !== '#e2e8f0' ? el.color : undefined],
-    ['font-size', el.fontSize ? `${Math.max(12, Math.round(el.fontSize + 2))}px` : undefined],
-    ['font-weight', el.fontWeight !== 'normal' ? el.fontWeight : undefined],
-    ['text-align', el.textAlign !== 'left' ? el.textAlign : undefined],
-  ]));
-  lines.push('}');
-
-  lines.push(`${selector} .postcontent, ${selector} .item, ${selector} p {`);
-  lines.push(`  font-size: ${el.fontSize || 12}px;`);
-  lines.push('}');
+  // Title + inner typography overrides, still authored against the Gaia panel
+  // classes and only when the user actually changed the panel typography.
+  if (headingLines.length > 0) {
+    lines.push(`${selector} > h2 {`);
+    lines.push(...headingLines);
+    lines.push('}');
+  }
 
   return lines.join('\n');
+}
+
+/** Single-element entry point used by the builder canvas preview. */
+export function buildGaiaPanelOverrideCss(el: ProfileElement, panelId: string): string {
+  const kind = el.gaia?.kind;
+  const def = getGaiaComponent(kind && isGaiaComponentKind(kind) ? kind : 'custom');
+  return buildPanelCss({ slotKind: 'gaia', element: el, def, column: el.gaia?.column || 1, panelId, index: 1 });
 }
 
 /** CSS for a freeform group wrapped in a Gaia custom panel (`.panel.custom_panel`). */
@@ -526,15 +557,27 @@ export function transpileProfile(
   const cssBlocks: string[] = [];
 
   cssBlocks.push(`/* ==========================================================================
-   Gaia V2 Profile CSS — generated by BBStudio
-   Layout owner: #columns > #column_1/2/3. Components are Gaia-supported panels.
+   Gaia V2 profile overrides — generated by BBStudio
+   Pasted into the profile's custom CSS box, so every rule here layers on top of
+   Gaia's own V2 stylesheet (#columns, .panel, .panel > h2, panel body type).
+   Nothing is emitted for a component that is still at its Gaia default.
    ========================================================================== */`);
 
-  cssBlocks.push(`/* Page surface (body-level CSS is preserved by Gaia V2 profiles) */
+  // Gaia already owns the page surface — only override it when the user
+  // actually authored a background.
+  const hasCustomBackground =
+    !!settings.backgroundImageLayers ||
+    !!settings.backgroundImage ||
+    (!!settings.backgroundColor && settings.backgroundColor !== GAIA_DEFAULT_PAGE_BACKGROUND);
+
+  if (hasCustomBackground) {
+    cssBlocks.push(`/* Page surface override (body-level CSS is preserved by Gaia V2 profiles) */
 body#viewer {
-  margin: 0;
-  padding: 0;
-  background-color: ${settings.backgroundColor || '#0e111a'};
+  ${
+    settings.backgroundColor
+      ? `background-color: ${settings.backgroundColor};`
+      : ''
+  }
   ${
     settings.backgroundImageLayers
       ? `background-image: ${settings.backgroundImageLayers};`
@@ -546,23 +589,15 @@ body#viewer {
   ${settings.backgroundSize ? `background-size: ${settings.backgroundSize};` : 'background-size: cover;'}
   background-position: center top;
   background-attachment: ${settings.backgroundAttachment || 'scroll'};
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
-  color: #e2e8f0;
 }`);
+  }
 
-  cssBlocks.push(GAIA_COLUMNS_BASE_CSS);
-  cssBlocks.push(GAIA_PANEL_BASE_CSS);
-
-  // Default component CSS, emitted once per component kind actually in use.
-  const seenKinds = new Set<string>();
+  // Per-instance overrides + freeform content. Components with nothing
+  // authored emit no CSS at all, so they render with Gaia's defaults.
   gaiaSlots.forEach((slot) => {
-    if (seenKinds.has(slot.def.kind)) return;
-    seenKinds.add(slot.def.kind);
-    cssBlocks.push(slot.def.defaultCss);
+    const block = buildPanelCss(slot);
+    if (block) cssBlocks.push(block);
   });
-
-  // Per-instance overrides + freeform content.
-  gaiaSlots.forEach((slot) => cssBlocks.push(buildPanelCss(slot)));
   freeformSlots.forEach((slot) => cssBlocks.push(buildFreeformCss(slot)));
 
   const hasAnimation = visibleElements.some((el) => el.animation?.enabled);
@@ -575,14 +610,14 @@ body#viewer {
   const renderGaiaSlot = (slot: GaiaPanelSlot): string => {
     const el = slot.element;
     const bodyHtml = el.gaia?.bodyHtml ?? slot.def.bodyHtml;
-    const extraStyle = el.height ? `min-height: ${el.height}px` : '';
+    // No inline min-height: Gaia's default CSS sizes the panel from its content
+    // and the canvas height stays an editor-only concern.
     return buildPanelHtml(slot.def.kind, {
       index: slot.index + 1,
       title: el.gaia?.title || el.content || slot.def.defaultTitle,
       bodyHtml,
       panelId: slot.panelId,
       extraClass: el.gaia?.extraClass,
-      extraStyle,
     });
   };
 
@@ -622,7 +657,16 @@ ${body || '    <!-- empty column -->'}
 ${[1, 2, 3].map((c) => renderColumn(c as Column)).join('\n')}
 </div>`;
 
-  const fullDocument = buildV2Document(columnsHtml, fullCss, settings.profileTitle || 'Gaia Profile');
+  // The standalone document is what every preview renders (Tools, code view):
+  // Gaia's default V2 stylesheet first, then the profile's overrides. The
+  // copy-paste CSS (`fullCss`) stays override-only.
+  const previewCss = [
+    '/* --- Gaia V2 defaults (preview only — Gaia serves these on the real page) --- */',
+    GAIA_V2_DEFAULT_CSS,
+    '/* --- Profile overrides --- */',
+    fullCss,
+  ].join('\n\n');
+  const fullDocument = buildV2Document(columnsHtml, previewCss, settings.profileTitle || 'Gaia Profile');
 
   /* ----------------------------- BBCode ---------------------------------- */
 

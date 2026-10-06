@@ -1,4 +1,5 @@
 import type { CanvasSettings, ProfileElement } from '../types/profile';
+import { GAIA_NEUTRAL_FONT_SIZE } from './gaiaDefaults';
 import maleAvatarUrl from '../assets/gaia-avatar-male.svg';
 import femaleAvatarUrl from '../assets/gaia-avatar-female.svg';
 
@@ -21,6 +22,12 @@ import femaleAvatarUrl from '../assets/gaia-avatar-female.svg';
  * instead of an arbitrary free-floating box. Free-standing canvas elements are
  * still supported, but they are wrapped in a real `.panel.custom_panel` so the
  * generated layout always stays inside Gaia's column layout.
+ *
+ * Styling: components are authored with Gaia's *default* V2 CSS. The builder
+ * never invents a theme of its own — panels start neutral (see
+ * `createGaiaPanelElement`) and the generated CSS only carries the overrides a
+ * user actually authored. The default look lives in `utils/gaiaDefaults.ts` and
+ * is used for previews only.
  */
 
 export const V2_UNSUPPORTED_MESSAGE =
@@ -62,8 +69,6 @@ export interface GaiaComponentDef {
   defaultTitle: string;
   /** Markup for the panel body (everything after the <h2>). */
   bodyHtml: string;
-  /** Default styling, authored with Gaia-supported selectors only. */
-  defaultCss: string;
   /** Short structural hints shown in the editor preview. */
   previewRows: string[];
   /** True when Gaia only accepts this content through a BBCode field. */
@@ -71,72 +76,6 @@ export interface GaiaComponentDef {
   /** Sparse BBCode fallback — only emitted when bbcodeRequired is true. */
   bbcodeTemplate?: string;
 }
-
-const PANEL_BASE_CSS = `/* Shared Gaia panel contract — .panel is the component root */
-.panel {
-  position: relative;
-  box-sizing: border-box;
-  margin: 0 0 12px 0;
-  padding: 10px 12px;
-  background-color: rgba(15, 23, 42, 0.86);
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  border-radius: 6px;
-  color: #e2e8f0;
-}
-
-.panel > h2 {
-  margin: 0 0 8px 0;
-  padding: 0 0 6px 0;
-  font-size: 15px;
-  font-weight: bold;
-  letter-spacing: 0.02em;
-  color: #c7d2fe;
-  border-bottom: 1px solid rgba(99, 102, 241, 0.25);
-}
-
-.panel .clear {
-  clear: both;
-  height: 0;
-  overflow: hidden;
-}
-
-.panel a {
-  color: #a5b4fc;
-  text-decoration: none;
-}
-
-.panel a:hover {
-  text-decoration: underline;
-}`;
-
-const COLUMNS_BASE_CSS = `/* Gaia V2 column layout — #columns owns positioning and reflow */
-#columns {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  width: 100%;
-  max-width: 1000px;
-  margin: 0 auto;
-  padding: 12px 8px 40px 8px;
-  box-sizing: border-box;
-}
-
-#columns .column {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-#columns #column_1 { order: 1; }
-#columns #column_2 { order: 2; }
-#columns #column_3 { order: 3; }
-
-/* Panels stay inside the layout owner — never absolutely positioned at body level */
-#columns .panel {
-  width: auto;
-}`;
-
-export const GAIA_COLUMNS_BASE_CSS = COLUMNS_BASE_CSS;
-export const GAIA_PANEL_BASE_CSS = PANEL_BASE_CSS;
 
 export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   details: {
@@ -160,39 +99,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
 <p><strong>Last Login:</strong> Today</p>
 <p><strong>Registered:</strong> Jan 2007</p>
 <div class="clear"></div>`,
-    defaultCss: `/* Details panel */
-.details_panel img.details_avatar {
-  display: block;
-  width: 120px;
-  height: 150px;
-  margin: 0 auto 8px auto;
-  border: 1px solid rgba(148, 163, 184, 0.4);
-}
-
-.details_panel .forum_userstatus {
-  margin-bottom: 8px;
-  font-size: 11px;
-}
-
-.details_panel .statuslinks .pushBox {
-  display: none;
-}
-
-.details_panel .statuslinks .online {
-  display: inline-block;
-  padding: 1px 6px;
-  background-color: rgba(34, 197, 94, 0.2);
-  border: 1px solid rgba(34, 197, 94, 0.5);
-  color: #86efac;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.details_panel p {
-  margin: 2px 0;
-  font-size: 11px;
-}`,
     previewRows: ['Avatar 120×150', 'Online status', 'Last Login / Registered'],
   },
 
@@ -217,24 +123,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   </a>
 </div>
 <div class="clear"></div>`,
-    defaultCss: `/* Equipped list */
-.equipped_list_panel .item {
-  display: inline-block;
-  margin: 2px;
-  vertical-align: top;
-}
-
-.equipped_list_panel .item_info img {
-  display: block;
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-}
-
-.equipped_list_panel .premium_sparkle {
-  position: absolute;
-  margin: -30px 0 0 18px;
-}`,
     previewRows: ['30×30 item grid', 'premium sparkle overlay'],
   },
 
@@ -253,17 +141,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   <li><a href="#">Send Message</a></li>
   <li><a href="#">Trade Items</a></li>
 </ul>`,
-    defaultCss: `/* Contact panel */
-.contact_panel ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.contact_panel li {
-  margin: 3px 0;
-  font-size: 12px;
-}`,
     previewRows: ['Add to Friends', 'Send Message', 'Trade Items'],
   },
 
@@ -280,11 +157,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
     bodyHtml: `<p><strong>Posts per Day:</strong> 0.57</p>
 <p><strong>Total Posts:</strong> 4448</p>
 <p><a href="#">Latest Posts</a></p>`,
-    defaultCss: `/* Forums panel */
-.forums_panel p {
-  margin: 2px 0;
-  font-size: 12px;
-}`,
     previewRows: ['Posts per Day', 'Total Posts', 'Latest Posts'],
   },
 
@@ -303,11 +175,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   <span style="color: crimson">Signature content</span>
   <div class="clear"></div>
 </div>`,
-    defaultCss: `/* Signature panel */
-.signature_panel .postcontent-align-center {
-  text-align: center;
-  font-size: 12px;
-}`,
     previewRows: ['postcontent wrapper', 'centered content'],
     bbcodeRequired: true,
     bbcodeTemplate: `[center][size=12][color=#dc143c]Signature content[/color][/size][/center]`,
@@ -327,19 +194,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
 <div align="center">
   <a href="#" class="header-launcher" data-launchtype="towns">Visit My House</a>
 </div>`,
-    defaultCss: `/* House panel */
-.house_panel object {
-  display: block;
-  margin: 0 auto 6px auto;
-}
-
-.house_panel .header-launcher {
-  display: inline-block;
-  padding: 2px 8px;
-  border: 1px solid rgba(163, 230, 53, 0.5);
-  background-color: rgba(163, 230, 53, 0.12);
-  font-size: 11px;
-}`,
     previewRows: ['200×200 house object', 'Visit My House launcher'],
   },
 
@@ -357,11 +211,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   <a href="#">Username</a> on 08/27/2026
 </div>
 <div class="clear"></div>`,
-    defaultCss: `/* Recent visitors / footprints */
-.footprints_panel .item {
-  margin: 2px 0;
-  font-size: 11px;
-}`,
     previewRows: ['Visitor link', 'Visit date'],
   },
 
@@ -377,15 +226,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
     defaultTitle: 'About',
     bodyHtml: `<p>Tell people about yourself.</p>
 <div class="clear"></div>`,
-    defaultCss: `/* About panel */
-.about_panel {
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.about_panel p {
-  margin: 0 0 6px 0;
-}`,
     previewRows: ['postcontent typography', 'free-form paragraph'],
   },
 
@@ -402,16 +242,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
     bodyHtml: `<h3></h3>
 <p>&nbsp;</p>
 <p><a href="#">View Store</a></p>`,
-    defaultCss: `/* Store panel */
-.store_panel h3 {
-  margin: 4px 0;
-  font-size: 13px;
-}
-
-.store_panel p {
-  margin: 3px 0;
-  font-size: 11px;
-}`,
     previewRows: ['Store heading', 'Description', 'View Store link'],
   },
 
@@ -430,28 +260,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
 </ul>
 <div class="clear"></div>
 <a href="#" id="badge_display">View More Badges</a>`,
-    defaultCss: `/* Badges */
-.badges_panel #badges {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.badges_panel #badges li {
-  display: inline-block;
-  margin: 2px;
-}
-
-.badges_panel #badges img {
-  width: 32px;
-  height: 32px;
-}
-
-.badges_panel #badge_display {
-  display: inline-block;
-  margin-top: 6px;
-  font-size: 11px;
-}`,
     previewRows: ['Badge row', 'View More Badges'],
   },
 
@@ -482,57 +290,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
     <div class="postcontent">Comment body</div>
   </dd>
 </dl>`,
-    defaultCss: `/* Comments panel */
-.comments_panel #alert_container,
-.comments_panel #alerts_banner {
-  margin-right: 10px;
-  font-size: 11px;
-}
-
-.comments_panel dl.style1 {
-  margin: 8px 0 0 0;
-}
-
-.comments_panel dt {
-  clear: both;
-  padding: 4px 0 2px 0;
-  border-top: 1px solid rgba(99, 102, 241, 0.2);
-  font-size: 11px;
-}
-
-.comments_panel dt .username {
-  font-weight: bold;
-  margin-right: 6px;
-}
-
-.comments_panel dt .date {
-  color: #94a3b8;
-  font-size: 10px;
-}
-
-.comments_panel dd {
-  margin: 0 0 8px 0;
-  overflow: hidden;
-  font-size: 12px;
-}
-
-.comments_panel dd .dropBox {
-  float: left;
-  margin-right: 8px;
-}
-
-.comments_panel dd .dropBox img {
-  display: block;
-  width: 48px;
-  height: 48px;
-}
-
-.comments_panel dd .deletecomment {
-  float: right;
-  margin: 0;
-  font-size: 10px;
-  text-align: right;
-}`,
     previewRows: ['Add Comment / Alert', 'Comment thread', '48×48 avatars'],
     bbcodeRequired: true,
     bbcodeTemplate: `[b]Comment[/b]\nComment body`,
@@ -554,18 +311,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   </a>
 </div>
 <div class="clear"></div>`,
-    defaultCss: `/* Wish list */
-.wish_list_panel .item {
-  display: inline-block;
-  margin: 2px;
-}
-
-.wish_list_panel .item_info img {
-  display: block;
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-}`,
     previewRows: ['30×30 quest items'],
   },
 
@@ -585,21 +330,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
 <ul id="entries">
   <li><a href="#"><span class="journal-date">08/27/2026</span></a></li>
 </ul>`,
-    defaultCss: `/* Journal */
-.journal_panel h3 {
-  margin: 4px 0;
-  font-size: 13px;
-}
-
-.journal_panel #entries {
-  margin: 4px 0 0 0;
-  padding-left: 16px;
-  font-size: 11px;
-}
-
-.journal_panel .journal-date {
-  color: #94a3b8;
-}`,
     previewRows: ['View Journal link', 'Dated entries'],
   },
 
@@ -619,18 +349,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
     <p><span><a href="#" title="Friend">Username</a></span></p>
   </li>
 </ul>`,
-    defaultCss: `/* Friends panel */
-.friends_panel ul.style2 {
-  margin: 6px 0 0 0;
-  padding: 0;
-  list-style: none;
-}
-
-.friends_panel ul.style2 li {
-  display: inline-block;
-  margin: 2px 6px 2px 0;
-  font-size: 11px;
-}`,
     previewRows: ['View All Friends', 'Friend links'],
   },
 
@@ -648,11 +366,6 @@ export const GAIA_COMPONENTS: Record<GaiaComponentKind, GaiaComponentDef> = {
   <p>Custom content</p>
 </div>
 <div class="clear"></div>`,
-    defaultCss: `/* Custom panel */
-.custom_panel .custom_content {
-  font-size: 12px;
-  line-height: 1.55;
-}`,
     previewRows: ['Arbitrary HTML', 'Kept as a panel root'],
   },
 };
@@ -902,6 +615,50 @@ export function xForColumn(settings: CanvasSettings, column: 1 | 2 | 3, elementW
   return Math.max(0, Math.round(band.start + (band.width - elementWidth) / 2));
 }
 
+/** Vertical gap between two components stacked in the same V2 column. */
+export const COLUMN_SLOT_GAP = 12;
+
+/** Top offset of the first component in an empty V2 column. */
+export const COLUMN_SLOT_TOP = 24;
+
+/**
+ * The V2 column a canvas element belongs to. Gaia panels carry their column
+ * explicitly; freeform elements derive it from the horizontal band they sit in.
+ */
+export function columnOfElement(
+  el: ProfileElement,
+  settings: CanvasSettings
+): 1 | 2 | 3 {
+  if (isGaiaPanelElement(el) && el.gaia) return el.gaia.column || 1;
+  return columnForX(settings, el.x, el.width);
+}
+
+/**
+ * Next free slot in a V2 column: everything in the column is stacked top to
+ * bottom, so a new component takes the space below the current bottom.
+ */
+export function nextSlotInColumn(
+  elements: ProfileElement[],
+  column: 1 | 2 | 3,
+  settings: CanvasSettings,
+  size: { width: number; height: number }
+): { x: number; y: number } {
+  let bottom = 0;
+  let occupied = false;
+
+  elements.forEach((el) => {
+    if (el.hidden) return;
+    if (columnOfElement(el, settings) !== column) return;
+    occupied = true;
+    bottom = Math.max(bottom, el.y + el.height);
+  });
+
+  return {
+    x: xForColumn(settings, column, size.width),
+    y: occupied ? Math.round(bottom + COLUMN_SLOT_GAP) : COLUMN_SLOT_TOP,
+  };
+}
+
 /** Create a first-class Gaia component element for the freeform/element canvas. */
 export function createGaiaPanelElement(
   kind: GaiaComponentKind,
@@ -912,8 +669,7 @@ export function createGaiaPanelElement(
   const def = getGaiaComponent(kind);
   const width = Math.min(360, Math.max(240, Math.round((settings.width || 1380) / 3) - 24));
   const height = kind === 'details' ? 340 : kind === 'comments' ? 300 : kind === 'house' ? 300 : 220;
-  const x = xForColumn(settings, column, width);
-  const y = 40 + (index % 4) * 24;
+  const { x, y } = nextSlotInColumn([], column, settings, { width, height });
 
   return {
     id: `gaia_${kind}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -931,21 +687,23 @@ export function createGaiaPanelElement(
     opacity: 100,
     locked: false,
     hidden: false,
-    color: '#e2e8f0',
-    backgroundColor: 'rgba(15, 23, 42, 0.86)',
-    fontSize: 13,
+    // Gaia-neutral styling: nothing here is emitted as an override, so the
+    // panel renders with Gaia's default V2 CSS until the user styles it.
+    color: 'inherit',
+    backgroundColor: 'transparent',
+    fontSize: GAIA_NEUTRAL_FONT_SIZE,
     fontWeight: 'normal',
     fontStyle: 'normal',
     textDecoration: 'none',
     textAlign: 'left',
     fontFamily: 'inherit',
-    borderWidth: 1,
-    borderColor: '#6366f1',
-    borderStyle: 'solid',
-    borderRadius: 6,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    borderStyle: 'none',
+    borderRadius: 0,
     boxShadow: 'none',
-    padding: 12,
-    overflow: 'hidden',
+    padding: 0,
+    overflow: 'visible',
     mask: {
       enabled: false,
       type: 'linear-gradient',
