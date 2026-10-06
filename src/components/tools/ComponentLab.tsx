@@ -464,8 +464,9 @@ export const ComponentLab: React.FC<ComponentLabProps> = ({ onSendToBuilder, imp
                       title={item.description}
                       aria-pressed={item.kind === kind}
                       onClick={() => {
+                        // The column is the user's placement choice — switching
+                        // the content type must not silently move it.
                         setKind(item.kind);
-                        setColumn(item.defaultColumn);
                         setTitle('');
                       }}
                       className={chipClass(item.kind === kind)}
