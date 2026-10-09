@@ -1,5 +1,6 @@
 import { ClipPoint, CustomComponent, ProfileElement, CanvasSettings } from '../types/profile';
-import { GaiaComponentKind, createGaiaPanelElement, xForColumn } from './gaiaSpec';
+import { GaiaComponentKind, createGaiaPanelElement, nextSlotInColumn } from './gaiaSpec';
+import { GAIA_DEFAULT_PAGE_BACKGROUND } from './gaiaDefaults';
 
 export const CLIP_PRESETS: Record<string, { label: string; vertices: ClipPoint[] }> = {
   hexagon: {
@@ -525,13 +526,16 @@ export const DEFAULT_CUSTOM_COMPONENTS: CustomComponent[] = [
   },
 ];
 
+/**
+ * The Gaia-native starter uses Gaia's *default* V2 surface — no background
+ * image, no colour — so the layout renders exactly like a stock profile until
+ * the author styles it.
+ */
 const GAIA_STARTER_SETTINGS: CanvasSettings = {
   width: 1380,
   height: 900,
-  backgroundColor: '#0b1020',
-  backgroundImage:
-    'https://images.unsplash.com/photo-1534796636912-3b95b3ab5986?w=1600&auto=format&fit=crop&q=70',
-  backgroundRepeat: 'repeat',
+  backgroundColor: GAIA_DEFAULT_PAGE_BACKGROUND,
+  backgroundRepeat: 'no-repeat',
   backgroundSize: 'cover',
   backgroundPosition: 'center top',
   gridSnap: true,
@@ -557,19 +561,20 @@ function buildGaiaStarterElements(): ProfileElement[] {
     ['friends', 3],
     ['badges', 3],
   ];
-  const cursor = new Map<number, number>();
-  return layout.map(([kind, column], index) => {
+  const placed: ProfileElement[] = [];
+  layout.forEach(([kind, column], index) => {
     const element = createGaiaPanelElement(kind, column, index, GAIA_STARTER_SETTINGS);
-    const row = cursor.get(column) || 0;
-    cursor.set(column, row + 1);
-    return {
+    // Same column-flow rule the builder uses when a component is added.
+    const slot = nextSlotInColumn(placed, column, GAIA_STARTER_SETTINGS, element);
+    placed.push({
       ...element,
-      x: xForColumn(GAIA_STARTER_SETTINGS, column, element.width),
-      y: 40 + row * 24,
+      x: slot.x,
+      y: slot.y,
       zIndex: index + 1,
       hidden: false,
-    };
+    });
   });
+  return placed;
 }
 
 export const STARTER_PROFILES: Record<
