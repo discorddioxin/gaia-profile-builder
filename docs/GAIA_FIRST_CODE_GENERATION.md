@@ -63,9 +63,28 @@ emitted (the CSS travels in the CSS tab); when the profile is freeform-only the
 `importProfileFromUrl()` / `importProfileFromHtml()` now:
 
 1. Fetch every `<link rel="stylesheet">` in `<head>` order through the proxy
-   chain (also for pasted HTML when a source URL is provided).
-2. Parse all `<style>` blocks in `<head>` **and** `<body>`.
-3. Detect the profile surface — the background is usually a *style*, not an
+   chain (also for pasted HTML when a source URL is provided). The chain is
+   direct → **Jina reader (GET + `X-Return-Format: html`)** → **Jina reader
+   (preflight-free form POST)** → AllOrigins → corsproxy.io → codetabs →
+   cors.lol → AllOrigins (JSON), raced with a 200 ms stagger; the first V2
+   `#columns` body wins (20 s per-attempt budget, 45 s for the readers,
+   cancellable). Head sheets are fetched **concurrently** while their blocks
+   keep the authored cascade order — a dead relay costs one timeout window, not
+   one per sheet. The readers are **pages-only** (skipped for stylesheets:
+   Gaia's CDN hotlink-blocks them and they burn the ~20 reads/minute budget).
+2. Gaia Online answers plain server-side fetchers with an **AWS WAF bot-check
+   page** ("verify that you're not a robot"). The Jina reader renders in a real
+   headless browser, executes the challenge, and returns the profile's
+   `documentElement.outerHTML` — so URL imports work even while every plain
+   relay is served the interstitial. When the reader also fails (usually its
+   rate limit), the error names the bot-check and the retry/saved-page routes.
+3. When every relay is down but the user loaded a saved page, Gaia's stock V2
+   CDN sheets (`/src/css/profiles/v2/*.css`) fall back to the bundled
+   `GAIA_V2_DEFAULT_CSS` (spliced once, with a diagnostic warning) so the CSS
+   read-out and `measureColumnShell` keep working; the preview iframe loads the
+   original `<link>` sheets directly, which browsers allow cross-origin.
+4. Parse all `<style>` blocks in `<head>` **and** `<body>`.
+5. Detect the profile surface — the background is usually a *style*, not an
    `<img>`:
    - `background` / `background-image` / `background-color` / `-repeat` /
      `-size` / `-position` / `-attachment` in CSS rules that target
@@ -73,15 +92,15 @@ emitted (the CSS travels in the CSS tab); when the profile is freeform-only the
    - inline `style="…"` on `<html>`, `<body>`, `#viewer`;
    - the legacy `background="…"` attribute.
    Relative `url(...)` values are resolved against the profile URL.
-4. Append a clearly marked rescue block to the imported CSS
+6. Append a clearly marked rescue block to the imported CSS
    (`/* Profile surface detected by BBStudio import */ html, body, body#viewer { … }`)
    so the background renders even when the original selector cannot match inside
    the editor's shadow root, or when a linked stylesheet was blocked.
-5. Store the surface on `settings` (`backgroundColor`, `backgroundImage`,
+7. Store the surface on `settings` (`backgroundColor`, `backgroundImage`,
    `backgroundRepeat`, `backgroundSize`, `backgroundPosition`,
    `backgroundAttachment`) so the canvas frame, the host wrapper and the shadow
    DOM all paint it.
-6. Translate every detected panel into a `gaia-panel` element
+8. Translate every detected panel into a `gaia-panel` element
    (`detectGaiaComponentKind`) and report a scrape summary:
    stylesheets found/fetched, background source, component counts per column and
    warnings. The Import dialog renders this report before you open the profile.
@@ -229,31 +248,49 @@ toggles it.
 ### Profile Tools (second top-level section)
 The header carries a Builder ⇄ Tools switcher; the two sections are independent
 and the Profile Tools workspace never mutates the active profile by itself.
-`ToolsStudio` hosts three labs:
+`ToolsStudio` is a two-column workbench: the tool options take the left **30%**
+of the width, while the right **70%** belongs to the whole-profile live preview
+(with zoom / fit / reset) and, underneath it, the CSS read-out at **30%** of the
+column height (CSS/Tree toggle, filter, *Copy CSS*). Both labs stay mounted while
+the tab bar switches between them, so a tab switch only reveals the other set of
+options — the preview, the CSS pane and any half-finished work stay put.
 
 - **Component Lab** — pick any of the 15 Gaia content types (grouped by
-  `GAIA_CATEGORIES`), then stack tooling: clip presets, mask presets, one motion
-  layer (animations / morphs / 3D) and any number of surface tokens
-  (`SURFACE_TOKENS`: neon glow, glass blur, gradient edge, scanlines, 3D plane,
-  inner frame). The result is assembled as a real `gaia-panel` `ProfileElement`
-  and run through `transpileProfile`, so the sandboxed preview and the copy
-  buttons show exactly what Gaia will receive. *Add to builder* appends it to the
-  open profile (or opens a `Toolkit Profile` when none exists yet) and switches
-  back with the element selected.
-- **Effect Library** — copy-ready CSS snippets (`EFFECT_SNIPPETS`) grouped by
-  Motion / Shape / Surface / Text / Layout, each previewed against real panel
-  markup; they target the Gaia ids (`#id_details`, …) so they paste straight into
-  a profile.
+  `GAIA_CATEGORIES`), then stack tooling from **checkbox dropdowns**: clip
+  presets, mask presets, any number of motion layers (animations / morphs / 3D —
+  all first-class in the builder's own animation library) and any number of
+  surface tokens (`SURFACE_TOKENS`: neon glow, glass blur, gradient edge,
+  scanlines, 3D plane, inner frame). Every selected motion layer gets its own
+  editable row under the dropdown — duration, delay, easing, iteration count,
+  direction, fill, play state and stagger — while the element-scoped 3D context
+  (`--tool-perspective`, `--tool-rotate-x/y`, `--tool-depth`, `--tool-origin`)
+  comes from the first layer. The result is assembled as a real `gaia-panel`
+  `ProfileElement` and run through `transpileProfile`, so the sandboxed preview
+  and the copy buttons show exactly what Gaia will receive. *Add to builder*
+  appends it to the open profile (or opens a `Toolkit Profile` when none exists
+  yet) and switches back with the element selected.
 - **Background Studio** — builds the `body#viewer { … }` surface rule
   (colour, linear/radial gradient, vignette, image, repeat, size, attachment)
   used for backgrounds that only exist as CSS.
+
+The column strip above the preview is the visible placement control (Left /
+Middle / Right) and reports the column width the preview is laid out with —
+230 / **500** / 230 px on Gaia's stock shell (margins 25 / 0 10 / 0), or the
+imported profile's own numbers. `src/utils/gaiaSpec.ts` owns that geometry:
+`measureColumnShell(css)` reads every `#column_N` rule (widths, `margin` /
+`margin-left` / `margin-right`, later rules winning) out of a stylesheet and
+returns a `ColumnShell` (`widths`, `margins`, `total`, `stock`);
+`GAIA_COLUMN_SHELL` / `GAIA_SHELL_WIDTH = 1005` are the stock values, and
+`columnBand` / `xForColumn` scale the shell onto the editor canvas so panels land
+where Gaia puts them.
 
 New presets live in `src/utils/toolPresets.ts`; the morph and 3D motion presets
 are also part of the shared animation library (`ANIMATION_PRESETS`,
 `getAnimationKeyframes()`), so they are available in the normal Animation Studio
 and export as self-contained keyframes there too.
 
-**Verification**: `.tmp/studio-smoke.tsx` (same jsdom/esbuild recipe as above)
+**Verification**: `npm run verify:ui` (see 9.5) is the current harness; the older
+`.tmp/studio-smoke.tsx` (same jsdom/esbuild recipe as above)
 walks the whole session — empty start, New Profile, collapsed sidebar, select to
 re-open, Import modal, Tools section, all 15 content types, clip + morph + 3D +
 surface tooling landing in the exported document, *Add to builder* in both
@@ -350,11 +387,23 @@ browser as the source:
 
 * `npm run verify:ui` (`scripts/verify/ui-smoke.tsx` + `run-ui-smoke.mjs`) — jsdom
   walk of the session: welcome screen, blank New Profile, dock collapsed/rail
-  open/close/**select-to-open**, Profile Tools + *Add to builder*, Effect Library
-  categories and morph/3D presets, HTML import with a stubbed CSS chain (report
-  lists the chain, shadow canvas keeps a real `<html>/<body>`, imported CSS is
-  verbatim except `:root` → `html`, multi-layer background preserved, `url()`
-  absolutized), canonical-URL/file loading, closing every tab.**38/38.**
+  open/close/**select-to-open**, Profile Tools + *Add to builder*, the 30/70
+  tools split, checkbox dropdowns, one motion row per selected tooling, the
+  Gaia column widths (230/500/230 + 15px panel padding) in the preview document,
+  comment-free generated CSS, tab switches that only swap the left pane, HTML
+  import with a stubbed CSS chain (report lists the chain, shadow canvas keeps a
+  real `<html>/<body>`, imported CSS is verbatim except `:root` → `html`,
+  multi-layer background preserved, `url()` absolutized), canonical-URL/file
+  loading, a cancelled hanging fetch, closing every tab. The harness boots the
+  app inside `<StrictMode>` exactly like `main.tsx`, so dev-only double-effect
+  ordering is exercised too — the Tools import regression (an inactive lab's
+  unmount cleanup nulling the freshly republished preview; fixed by the
+  ownership guard in `useToolsPreview`) is covered by the tools-import checks,
+  as are the relay-down fallbacks (bundled stock V2 CSS when Gaia's CDN sheets
+  cannot be fetched, spliced once; the AWS WAF bot-check page reported by name
+  with the saved-page route named; the browser-rendering reader winning the
+  race past the bot-check with a preflight-free POST shape; stylesheet fetches
+  skipping the reader).**91/91.**
   Needs the check-only deps: `npm i --no-save --no-audit --no-fund esbuild jsdom`.
 * `npm run verify:fidelity` (`scripts/verify/background-fidelity.mjs`) — real-Chromium, end-to-end: serves
   `scripts/verify/fixture-server.mjs` (a Gaia-like profile with a linked theme

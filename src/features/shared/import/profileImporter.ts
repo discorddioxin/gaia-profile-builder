@@ -1,5 +1,5 @@
-import { ProfileElement, CanvasSettings } from '../types/profile';
-import { CLIP_PRESETS } from './presets';
+import { ProfileElement, CanvasSettings } from '../../../types/profile';
+import { CLIP_PRESETS } from '../../../utils/presets';
 import { extractCanonicalUrl } from './importFile';
 import {
   BackgroundSnapshot,
@@ -11,7 +11,7 @@ import {
   rewriteCssAssetUrls,
   rewriteImportTargets,
   snapshotDeclarations,
-} from './cssFidelity';
+} from '../../../utils/cssFidelity';
 import {
   GAIA_COMPONENT_ROOT_SELECTOR,
   createGaiaPanelElement,
@@ -19,7 +19,8 @@ import {
   getGaiaComponent,
   isGaiaComponentKind,
   xForColumn,
-} from './gaiaSpec';
+} from '../../../utils/gaiaSpec';
+import { GAIA_V2_DEFAULT_CSS } from '../../../utils/gaiaDefaults';
 
 /** Background resolved from the profile's CSS/inline styles (style, not <img>). */
 export interface DetectedBackground {
@@ -76,62 +77,286 @@ export interface ImportResult {
 const V2_UNSUPPORTED_MESSAGE =
   'Only V2 profiles supported. The imported HTML must include #columns with #column_1, #column_2, and #column_3.';
 
-const CORS_PROXIES = [
-  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  (url: string) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
-  (url: string) => `https://cors-anywhere.herokuapp.com/${url}`,
-  (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`,
+/**
+ * CORS relay endpoints, in the order they are tried. Each entry knows how to
+ * build its URL and how to unwrap its response (AllOrigins' `/get` route wraps
+ * the page in JSON).
+ */
+const CORS_PROXIES: Array<{
+  label: string;
+  build: (url: string) => string;
+  /** Extra fetch init (method/body/headers) for this relay's request shape. */
+  init?: (url: string) => RequestInit;
+  /** Per-relay attempt budget; defaults to the caller's timeout. */
+  timeoutMs?: number;
+  /** Page fetches only — skipped for stylesheets (rate limits, no benefit). */
+  pagesOnly?: boolean;
+  unwrap?: (body: string) => string;
+}> = [
+  {
+    // A real headless browser: it executes Gaia's AWS WAF challenge script,
+    // so it reads pages the plain relays only ever see as a bot-check page.
+    label: 'Jina reader (rendered)',
+    build: (url) => `https://r.jina.ai/${url}`,
+    init: () => ({ headers: { 'X-Return-Format': 'html' } }),
+    timeoutMs: 45000,
+    pagesOnly: true,
+  },
+  {
+    // Preflight-free shape: a form-urlencoded POST is a CORS simple request,
+    // so this works even when the browser rejects the custom header above.
+    label: 'Jina reader (POST)',
+    build: () => 'https://r.jina.ai/',
+    init: (url) => ({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `url=${encodeURIComponent(url)}&returnFormat=html&respondWith=html`,
+    }),
+    timeoutMs: 45000,
+    pagesOnly: true,
+  },
+  {
+    label: 'AllOrigins',
+    build: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'corsproxy.io',
+    build: (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'codetabs',
+    build: (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'cors.lol',
+    build: (url) => `https://api.cors.lol/?url=${encodeURIComponent(url)}`,
+  },
+  {
+    label: 'AllOrigins (JSON)',
+    build: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    unwrap: (body) => {
+      try {
+        return String(JSON.parse(body)?.contents ?? '');
+      } catch {
+        return '';
+      }
+    },
+  },
 ];
+
+/** Responses that are really a proxy/gateway error page, not the profile. */
+const ERROR_BODY_MARKERS = [
+  /error:\s*network connection lost/i,
+  /upstream connect error/i,
+  /<title>\s*just a moment/i,
+  /cf-error-details/i,
+  /<title>\s*429 too many requests/i,
+  /request blocked by/i,
+  /awswafintegration/i,
+  /we need to verify that you'?re not a robot/i,
+];
+
+/**
+ * Gaia Online answers server-side fetchers with an AWS WAF interstitial
+ * ("verify that you're not a robot"), not the profile. Recognizing it keeps
+ * the error honest instead of reporting a generic unusable response.
+ */
+const AWS_WAF_MARKERS = [/awswafintegration/i, /we need to verify that you'?re not a robot/i];
+
+/** Gaia's stock V2 stylesheet chain on the CDN (version query ignored). */
+const GAIA_V2_SHEET_RE = /\/src\/css\/profiles\/v2\/[a-z_]+\.css/i;
+
+/** Cheap quality gate: is this plausibly a page body? */
+function isUsableHtml(body: string): boolean {
+  if (!body || body.length < 500) return false;
+  if (!/<html|<!doctype|<body|<div/i.test(body)) return false;
+  return !ERROR_BODY_MARKERS.some((marker) => marker.test(body));
+}
+
+/** A Gaia V2 profile always ships the `#columns` shell. */
+function looksLikeV2Profile(body: string): boolean {
+  return /id\s*=\s*["']?columns\b/i.test(body);
+}
+
+/** A stylesheet body: non-trivial text that is not a gateway error page. */
+function isUsableStylesheet(body: string): boolean {
+  if (!body || body.trim().length < 24) return false;
+  return !ERROR_BODY_MARKERS.some((marker) => marker.test(body));
+}
 
 /** Sleep helper for slow-loading pages */
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/**
- * Fetch a URL's raw HTML using a series of CORS proxy fallbacks.
- * Tries direct fetch first, then proxies in order until one succeeds.
- */
-async function fetchWithTimeout(url: string, timeoutMs = 25000): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { mode: 'cors', signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
+export interface FetchHtmlOptions {
+  /** Cancels the fetch (dialog Cancel / close). */
+  signal?: AbortSignal;
+  /** Per-attempt budget. A hung proxy fails here instead of blocking forever. */
+  timeoutMs?: number;
+  /**
+   * What the caller expects back. Pages must look like HTML (and a V2 profile
+   * must carry `#columns`); stylesheets only need to be non-empty text.
+   */
+  accept?: 'html' | 'stylesheet';
+}
+
+/** Raised when the caller cancelled the import. */
+export class ImportAbortedError extends Error {
+  constructor() {
+    super('Import cancelled.');
+    this.name = 'ImportAbortedError';
   }
 }
 
+/** One fetch attempt with its own timeout, linked to the caller's signal. */
+async function fetchOnce(
+  url: string,
+  timeoutMs: number,
+  outerSignal?: AbortSignal,
+  init?: RequestInit
+): Promise<string> {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  outerSignal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { mode: 'cors', ...init, signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } catch (error) {
+    if (outerSignal?.aborted) throw new ImportAbortedError();
+    if (controller.signal.aborted) throw new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    outerSignal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
+ * Fetch a page's HTML through the first source that actually returns a profile.
+ *
+ * Direct → CORS relays, started with a small stagger and raced: the first
+ * response that contains the V2 `#columns` shell wins, so a slow or hanging
+ * relay can't hold the import hostage. A usable-but-unverified body is kept as
+ * a fallback in case no source returns the real page.
+ */
 export async function fetchProfileHtml(
   url: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<string> {
-  const attempts: Array<{ label: string; fn: () => Promise<string> }> = [
-    { label: 'direct', fn: () => fetchWithTimeout(url) },
-    ...CORS_PROXIES.map((proxy, i) => ({
-      label: `proxy ${i + 1}`,
-      fn: () => fetchWithTimeout(proxy(url)),
+  const { signal, timeoutMs = 20000, accept = 'html' } = options;
+  if (signal?.aborted) throw new ImportAbortedError();
+  const wantsStylesheet = accept === 'stylesheet';
+
+  const host = (() => {
+    try {
+      return new URL(url).hostname;
+    } catch {
+      return url;
+    }
+  })();
+
+  const attempts: Array<{
+    label: string;
+    budget: number;
+    run: (timeout: number) => Promise<string>;
+  }> = [
+    { label: 'direct connection', budget: timeoutMs, run: (timeout) => fetchOnce(url, timeout, signal) },
+    // The browser-rendering reader only helps pages: stylesheets neither need
+    // JS execution nor survive it (and Gaia's CDN hotlink-blocks the reader).
+    ...CORS_PROXIES.filter((proxy) => !proxy.pagesOnly || !wantsStylesheet).map((proxy) => ({
+      label: proxy.label,
+      budget: proxy.timeoutMs ?? timeoutMs,
+      run: async (timeout: number) => {
+        const body = await fetchOnce(proxy.build(url), timeout, signal, proxy.init?.(url));
+        return proxy.unwrap ? proxy.unwrap(body) : body;
+      },
     })),
   ];
 
-  const errors: string[] = [];
-  for (const attempt of attempts) {
-    onProgress?.(`Trying ${attempt.label}…`);
-    try {
-      const html = await attempt.fn();
-      if (html && html.length > 40) {
-        onProgress?.(`Loaded via ${attempt.label} (${(html.length / 1024).toFixed(1)}KB)`);
-        return html;
-      }
-      errors.push(`${attempt.label}: empty response`);
-    } catch (err) {
-      errors.push(`${attempt.label}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  throw new Error(
-    `All fetch attempts failed. Sites requiring login (Gaia Online, most forums) cannot be fetched directly — use "Import with HTML" and paste the page source. Details:\n${errors.join('\n')}`
+  onProgress?.(
+    `Fetching ${host} — direct, CORS relays, and a browser-rendering reader for bot-checked pages…`
   );
+
+  return new Promise<string>((resolve, reject) => {
+    let pending = attempts.length;
+    let fallback = '';
+    let fallbackLabel = '';
+    let sawBotCheck = false;
+    const errors: string[] = [];
+
+    const finish = () => {
+      if (fallback) {
+        onProgress?.(`Loaded via ${fallbackLabel} (unverified) (${(fallback.length / 1024).toFixed(1)}KB)`);
+        resolve(fallback);
+        return;
+      }
+      const isGaia = /gaiaonline\.com|gaia\.online/i.test(host);
+      const reason = sawBotCheck
+        ? 'Gaia Online answered the plain relays with a bot-check page (AWS WAF), and the browser-rendering reader did not get through either — it is rate-limited to about 20 reads a minute, so wait a minute and retry.'
+        : isGaia
+          ? 'Gaia profiles are protected by a bot check, and the public relays may also be down or rate-limited.'
+          : 'The site blocked the fetch, or every public CORS relay is down or rate-limited right now.';
+      reject(
+        new Error(
+          wantsStylesheet
+            ? `Could not fetch the stylesheet from ${host}. ${reason} Attempts:\n${errors.join('\n')}`
+            : `Could not fetch ${host}. ${reason}\n\nThe reliable route: open the profile in your browser, save it (Ctrl/⌘+S → "Webpage, HTML only") and load that file below — it works without the relays. Attempts:\n${errors.join('\n')}`
+        )
+      );
+    };
+
+    attempts.forEach((attempt, index) => {
+      const start = () =>
+        attempt
+          .run(attempt.budget)
+          .then((body) => {
+            if (wantsStylesheet) {
+              if (AWS_WAF_MARKERS.some((marker) => marker.test(body))) {
+                sawBotCheck = true;
+                errors.push(`${attempt.label}: bot-check page (AWS WAF)`);
+              } else if (isUsableStylesheet(body)) resolve(body);
+              else errors.push(`${attempt.label}: unusable stylesheet`);
+              return;
+            }
+            if (looksLikeV2Profile(body)) {
+              onProgress?.(`Loaded via ${attempt.label} (${(body.length / 1024).toFixed(1)}KB)`);
+              resolve(body);
+              return;
+            }
+            if (AWS_WAF_MARKERS.some((marker) => marker.test(body))) {
+              sawBotCheck = true;
+              errors.push(`${attempt.label}: bot-check page (AWS WAF)`);
+              return;
+            }
+            if (isUsableHtml(body)) {
+              if (!fallback) {
+                fallback = body;
+                fallbackLabel = attempt.label;
+              }
+              onProgress?.(`${attempt.label} returned a page without #columns — keeping it as a fallback`);
+            } else {
+              errors.push(`${attempt.label}: unusable response`);
+            }
+          })
+          .catch((error: unknown) => {
+            if (error instanceof ImportAbortedError) {
+              reject(error);
+              return;
+            }
+            errors.push(`${attempt.label}: ${error instanceof Error ? error.message : String(error)}`);
+            onProgress?.(`${attempt.label} failed — trying the next source…`);
+          })
+          .finally(() => {
+            pending -= 1;
+            if (pending === 0) finish();
+          });
+
+      // Stagger the relay requests slightly; the direct attempt goes first.
+      window.setTimeout(start, index * 200);
+    });
+  });
 }
 
 /** Strip all <script>...</script> blocks + inline event handlers + javascript: URLs */
@@ -417,21 +642,29 @@ function assertGaiaV2DefaultLayout(doc: Document): void {
 export async function extractCss(
   doc: Document,
   baseUrl: string,
-  onProgress?: (msg: string) => void
-): Promise<{ css: string; stylesheets: StylesheetRecord[] }> {
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
+): Promise<{ css: string; stylesheets: StylesheetRecord[]; warnings: string[] }> {
   const blocks: string[] = [];
   const stylesheets: StylesheetRecord[] = [];
+  const warnings: string[] = [];
+  let bundledGaiaCssUsed = false;
 
   /** Fetch a sheet the same way pages are fetched: direct, then CORS proxies. */
   const fetchCss = async (url: string): Promise<string> => {
-    const text = await fetchProfileHtml(url, undefined);
+    const text = await fetchProfileHtml(url, undefined, {
+      ...options,
+      accept: 'stylesheet',
+      timeoutMs: options.timeoutMs ?? 15000,
+    });
     if (!text.trim()) throw new Error('empty stylesheet');
     return text;
   };
 
-  const inlineLinkedSheet = async (el: HTMLLinkElement) => {
+  /** Inline one <link> sheet. Returns the block, or null when nothing is added. */
+  const inlineLinkedSheet = async (el: HTMLLinkElement): Promise<string | null> => {
     const href = el.getAttribute('href');
-    if (!href) return;
+    if (!href) return null;
     let absolute = href;
     try {
       absolute = new URL(href, baseUrl).toString();
@@ -448,7 +681,6 @@ export async function extractCss(
         onProgress,
       });
       const withUrls = rewriteCssAssetUrls(resolved.css, absolute);
-      blocks.push(`/* ------------------------------------------------------------------\n   From <link rel="stylesheet" href="${absolute}">${label}\n   ------------------------------------------------------------------ */\n${withUrls}`);
       stylesheets.push({
         url: absolute,
         ok: true,
@@ -461,6 +693,7 @@ export async function extractCss(
       onProgress?.(
         `Linked stylesheet inlined${label} (${(raw.length / 1024).toFixed(1)}KB): ${absolute}`
       );
+      return `/* ------------------------------------------------------------------\n   From <link rel="stylesheet" href="${absolute}">${label}\n   ------------------------------------------------------------------ */\n${withUrls}`;
     } catch {
       stylesheets.push({
         url: absolute,
@@ -469,7 +702,23 @@ export async function extractCss(
         kind: meta.kind,
         label: meta.label,
       });
+      // Gaia's stock V2 sheets are known: splice the bundled copy in once so
+      // the CSS read-out and column measuring still work when every relay is
+      // down. The preview keeps the original <link>, and the browser loads
+      // stylesheets cross-origin without CORS, so rendering is unaffected.
+      if (GAIA_V2_SHEET_RE.test(absolute)) {
+        if (!bundledGaiaCssUsed) {
+          bundledGaiaCssUsed = true;
+          warnings.push(
+            `Gaia's stock V2 stylesheet(s) could not be fetched (relays unavailable) — the bundled stock V2 CSS was spliced in for the CSS read-out; the preview loads the originals directly.`
+          );
+          onProgress?.(`Relay unavailable — using the bundled Gaia stock V2 CSS for ${absolute}`);
+          return `/* ------------------------------------------------------------------\n   Gaia stock V2 CSS — bundled fallback (relay unavailable for ${absolute})\n   The preview still loads the original <link> directly.\n   ------------------------------------------------------------------ */\n${GAIA_V2_DEFAULT_CSS}`;
+        }
+        return `/* ${absolute} — not fetched (bundled Gaia stock V2 CSS already inlined above) */`;
+      }
       onProgress?.(`Stylesheet blocked${label}: ${absolute}`);
+      return null;
     }
   };
 
@@ -482,21 +731,20 @@ export async function extractCss(
    * `@import` is only valid at the top of a stylesheet (nested rules keep their
    * position inside enclosing `@media`/`@supports` blocks).
    */
-  const pushStyleNode = async (el: HTMLStyleElement | Element, source: string) => {
+  const pushStyleNode = async (
+    el: HTMLStyleElement | Element,
+    source: string
+  ): Promise<string | null> => {
     const text = el.textContent;
-    if (!text || !text.trim()) return;
+    if (!text || !text.trim()) return null;
     if (!/^\s*@import\b/m.test(text)) {
-      blocks.push(
-        `/* From ${source} */\n${rewriteImportTargets(rewriteCssAssetUrls(text, baseUrl), baseUrl)}`
-      );
-      return;
+      return `/* From ${source} */\n${rewriteImportTargets(rewriteCssAssetUrls(text, baseUrl), baseUrl)}`;
     }
     const resolved = await resolveCssImports(text, baseUrl, fetchCss, {
       depth: 3,
       onProgress,
     });
     const withUrls = rewriteImportTargets(rewriteCssAssetUrls(resolved.css, baseUrl), baseUrl);
-    blocks.push(`/* From ${source} */\n${withUrls}`);
     if (resolved.imports.length) {
       stylesheets.push(...resolved.imports);
       onProgress?.(
@@ -505,25 +753,39 @@ export async function extractCss(
           .join(', ')}`
       );
     }
+    return `/* From ${source} */\n${withUrls}`;
   };
 
   // <head> in document order — link → style → inline, exactly as authored.
+  // Sheets are fetched concurrently (a dead relay then costs one timeout
+  // window, not one per sheet) while the blocks keep their authored order.
   const headNodes = Array.from(doc.head?.childNodes || []);
+  const headTasks: Array<Promise<void>> = [];
+  const orderedBlocks: Array<string | null> = [];
   for (const node of headNodes) {
     if (node.nodeType !== Node.ELEMENT_NODE) continue;
     const el = node as HTMLElement;
+    let task: Promise<string | null> | null = null;
     if (el.tagName === 'STYLE') {
-      await pushStyleNode(el, '<style> in <head>');
-      continue;
+      task = pushStyleNode(el, '<style> in <head>');
+    } else if (el.tagName === 'LINK' && (el as HTMLLinkElement).rel === 'stylesheet') {
+      task = inlineLinkedSheet(el as HTMLLinkElement);
     }
-    if (el.tagName === 'LINK' && (el as HTMLLinkElement).rel === 'stylesheet') {
-      await inlineLinkedSheet(el as HTMLLinkElement);
+    if (task) {
+      const slot = orderedBlocks.length;
+      orderedBlocks.push(null);
+      headTasks.push(task.then((block) => void (orderedBlocks[slot] = block)));
     }
   }
+  await Promise.all(headTasks);
+  orderedBlocks.forEach((block) => {
+    if (block) blocks.push(block);
+  });
 
   // Some profiles keep <style> blocks in the body (inside #columns or panels).
   for (const styleEl of Array.from(doc.body?.querySelectorAll('style') || [])) {
-    await pushStyleNode(styleEl, '<style> in <body>');
+    const block = await pushStyleNode(styleEl, '<style> in <body>');
+    if (block) blocks.push(block);
   }
 
   const css = withGaiaPanelBaseCss(doc, blocks.join('\n\n'));
@@ -543,7 +805,7 @@ export async function extractCss(
     );
   }
 
-  return { css, stylesheets };
+  return { css, stylesheets, warnings };
 }
 
 /** Absolutize CSS asset URLs (delegates to the fidelity module). */
@@ -1268,10 +1530,11 @@ function parseClipPolygon(clip?: string): { x: number; y: number }[] | null {
 /** Top-level: fetch URL, sanitize, parse, scrape styles/background, reconstruct. */
 export async function importProfileFromUrl(
   url: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<ImportResult> {
   onProgress?.('Fetching page…');
-  const rawHtml = await fetchProfileHtml(url, onProgress);
+  const rawHtml = await fetchProfileHtml(url, onProgress, options);
 
   onProgress?.('Sanitizing (removing scripts)…');
   const { clean, scriptsRemoved } = sanitizeHtml(rawHtml);
@@ -1288,7 +1551,12 @@ export async function importProfileFromUrl(
   injectBbIds(doc);
 
   onProgress?.('Extracting stylesheets…');
-  const { css: importedCss, stylesheets } = await extractCss(doc, url, onProgress);
+  const { css: importedCss, stylesheets, warnings: cssWarnings } = await extractCss(
+    doc,
+    url,
+    onProgress,
+    options
+  );
 
   // The profile background is usually CSS (body/html rule) rather than an <img>.
   let background = detectProfileBackground(doc, importedCss, url);
@@ -1330,7 +1598,7 @@ export async function importProfileFromUrl(
     ...backgroundToSettings(background),
   };
 
-  const warnings: string[] = [];
+  const warnings: string[] = [...cssWarnings];
   const failed = stylesheets.filter((s) => !s.ok);
   if (failed.length) {
     warnings.push(
@@ -1478,7 +1746,8 @@ export function injectBbIds(doc: Document): void {
 export async function importProfileFromHtml(
   rawInput: string,
   sourceUrl?: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  options: FetchHtmlOptions = {}
 ): Promise<ImportResult> {
   const { clean, scriptsRemoved } = sanitizeHtml(rawInput);
 
@@ -1513,10 +1782,12 @@ export async function importProfileFromHtml(
   const stylesheets: StylesheetRecord[] = [];
   let importedCss = '';
 
+  let cssChainWarnings: string[] = [];
   if (base) {
     onProgress?.('Resolving the profile CSS chain (links, @imports, libraries)…');
-    const linked = await extractCss(doc, base, onProgress);
+    const linked = await extractCss(doc, base, onProgress, options);
     importedCss = linked.css;
+    cssChainWarnings = linked.warnings;
     stylesheets.push(...linked.stylesheets);
   } else {
     // No source URL: <link> and @import targets cannot be resolved, but the
@@ -1558,7 +1829,7 @@ export async function importProfileFromHtml(
   onProgress?.('Reconstructing elements…');
   const { elements, settings } = reconstructElements(doc, rawCss);
 
-  const warnings: string[] = [];
+  const warnings: string[] = [...cssChainWarnings];
   if (!base) {
     warnings.push(
       'No source URL supplied and the markup has no <link rel="canonical"> — linked stylesheets and @imports cannot be resolved. Load the saved page from the URL it was saved from (or fill in the profile URL) so the CSS chain is fetched 1:1.'
@@ -1600,3 +1871,6 @@ export async function importProfileFromHtml(
     },
   };
 }
+
+/** Stylesheet record type re-exported for consumers of the import feature. */
+export type { StylesheetRecord } from '../../../utils/cssFidelity';
